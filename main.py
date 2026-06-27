@@ -1,13 +1,15 @@
 """
 EcoPrompt - Developer Middleware Proxy
-Step 4: Routing Matrix added
+Step 4: Routing Matrix + multi-provider support
 """
 
+import os
 import time
 import uuid
 import logging
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 import httpx
 from utils.logger import log_request
 
@@ -17,15 +19,35 @@ logger = logging.getLogger("ecoprompt")
 app = FastAPI(
     title="EcoPrompt",
     description="Smart middleware proxy to slash AI token usage and cost",
-    version="0.4.0",
+    version="0.4.1",
 )
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+PROVIDERS = {
+    "groq":   "https://api.groq.com/openai/v1/chat/completions",
+    "openai": "https://api.openai.com/v1/chat/completions",
+}
+
+
+def detect_provider(model: str, auth_header: str):
+    api_key = auth_header.replace("Bearer ", "").strip() if auth_header else ""
+    if model.startswith("groq/") or api_key.startswith("gsk_"):
+        clean_model = model.replace("groq/", "")
+        return PROVIDERS["groq"], api_key, clean_model
+    return PROVIDERS["openai"], api_key, model
 
 
 @app.get("/health")
 async def health():
     return {
         "status": "ok",
-        "version": "0.4.0",
+        "version": "0.4.1",
         "features": ["token_compression", "semantic_cache", "routing_matrix"],
     }
 
@@ -60,9 +82,13 @@ async def chat_completions(request: Request):
 
     model = body.get("model", "unknown")
     messages = body.get("messages", [])
+    auth_header = request.headers.get("authorization", "")
     logger.info(f"[{request_id}] Incoming | model={model} | messages={len(messages)}")
 
-    # PHASE 3: Semantic cache check
+    upstream_url, api_key, clean_model = detect_provider(model, auth_header)
+    body["model"] = clean_model
+
+    # PHASE 3: Semantic cache
     use_cache = request.headers.get("x-ecoprompt-cache", "true").lower() != "false"
     if use_cache:
         try:
@@ -72,15 +98,8 @@ async def chat_completions(request: Request):
                 app.state.cache_hits += 1
                 app.state.request_count += 1
                 latency_ms = round((time.time() - start) * 1000)
-                log_request(
-                    request_id=request_id,
-                    model=model,
-                    tokens_in=0,
-                    tokens_out=0,
-                    latency_ms=latency_ms,
-                    cache_hit=True,
-                    source="cache",
-                )
+                log_request(request_id=request_id, model=model, tokens_in=0,
+                            tokens_out=0, latency_ms=latency_ms, cache_hit=True, source="cache")
                 logger.info(f"[{request_id}] Cache HIT | latency={latency_ms}ms")
                 response = JSONResponse(content=cached)
                 response.headers["x-ecoprompt-cache"] = "hit"
@@ -96,43 +115,39 @@ async def chat_completions(request: Request):
             from core.compressor import compress_messages
             compressed_messages, compression_stats = compress_messages(messages)
             body["messages"] = compressed_messages
-            logger.info(
-                f"[{request_id}] Compressed | "
-                f"saved={compression_stats['tokens_saved']} tokens"
-            )
+            logger.info(f"[{request_id}] Compressed | saved={compression_stats['tokens_saved']} tokens")
         except Exception as e:
             logger.warning(f"[{request_id}] Compression skipped: {e}")
 
-    # PHASE 4: Routing matrix
-    use_router = request.headers.get("x-ecoprompt-route", "true").lower() != "false"
-    routed_model = model
-    if use_router:
-        try:
-            from core.router import route
-            routed_model = route(messages, model)
-            body["model"] = routed_model
-            if routed_model == "gpt-4o-mini":
-                app.state.cheap_routes += 1
-            else:
-                app.state.powerful_routes += 1
-        except Exception as e:
-            logger.warning(f"[{request_id}] Routing skipped: {e}")
+    # PHASE 4: Routing
+    routed_model = clean_model
+    if not model.startswith("groq/"):
+        use_router = request.headers.get("x-ecoprompt-route", "true").lower() != "false"
+        if use_router:
+            try:
+                from core.router import route
+                routed_model = route(messages, clean_model)
+                body["model"] = routed_model
+                if "mini" in routed_model:
+                    app.state.cheap_routes += 1
+                else:
+                    app.state.powerful_routes += 1
+            except Exception as e:
+                logger.warning(f"[{request_id}] Routing skipped: {e}")
 
-    upstream_url = "https://api.openai.com/v1/chat/completions"
     forward_headers = {
-        k: v for k, v in request.headers.items()
-        if k.lower() not in {
-            "host", "content-length", "transfer-encoding",
-            "x-ecoprompt-compress", "x-ecoprompt-cache", "x-ecoprompt-route",
-        }
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
     }
+
+    logger.info(f"[{request_id}] Sending to {upstream_url} | model={body['model']}")
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             upstream = await client.post(upstream_url, json=body, headers=forward_headers)
             upstream.raise_for_status()
         except httpx.HTTPStatusError as e:
-            logger.error(f"[{request_id}] Upstream error: {e.response.status_code}")
+            logger.error(f"[{request_id}] Upstream error: {e.response.status_code} {e.response.text}")
             return JSONResponse(status_code=e.response.status_code, content=e.response.json())
         except httpx.RequestError as e:
             logger.error(f"[{request_id}] Connection error: {e}")
@@ -159,15 +174,8 @@ async def chat_completions(request: Request):
         except Exception as e:
             logger.warning(f"[{request_id}] Cache store skipped: {e}")
 
-    log_request(
-        request_id=request_id,
-        model=routed_model,
-        tokens_in=tokens_in,
-        tokens_out=tokens_out,
-        latency_ms=latency_ms,
-        cache_hit=False,
-        source="upstream",
-    )
+    log_request(request_id=request_id, model=routed_model, tokens_in=tokens_in,
+                tokens_out=tokens_out, latency_ms=latency_ms, cache_hit=False, source="upstream")
 
     logger.info(
         f"[{request_id}] Done | model={routed_model} tokens_in={tokens_in} "
@@ -191,4 +199,4 @@ async def startup():
     app.state.cheap_routes = 0
     app.state.powerful_routes = 0
     app.state.estimated_savings = 0.0
-    logger.info("EcoPrompt v0.4.0 started - Compression + Cache + Routing enabled")
+    logger.info("EcoPrompt v0.4.1 started - Compression + Cache + Routing + Multi-provider")
