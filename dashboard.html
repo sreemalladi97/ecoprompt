@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EcoPrompt Dashboard</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Inter:wght@400;500;600&display=swap');
+
+  :root {
+    --bg: #0a0f0a;
+    --surface: #111811;
+    --border: #1e2a1e;
+    --green: #00ff87;
+    --green-dim: #00c86a;
+    --green-muted: rgba(0,255,135,0.08);
+    --text: #e8f5e8;
+    --text-dim: #7a9a7a;
+    --red: #ff4d4d;
+    --amber: #ffb800;
+    --white: #ffffff;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    min-height: 100vh;
+    padding: 32px 24px;
+  }
+
+  /* Header */
+  header {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    margin-bottom: 40px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 20px;
+  }
+
+  .logo {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--green);
+    letter-spacing: -0.5px;
+  }
+
+  .version {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+    background: var(--green-muted);
+    border: 1px solid var(--border);
+    padding: 2px 8px;
+    border-radius: 3px;
+  }
+
+  .status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    margin-left: auto;
+    box-shadow: 0 0 8px var(--green);
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  .status-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  /* Grid */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 20px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: var(--green);
+    opacity: 0.3;
+  }
+
+  .card.highlight::before { opacity: 1; }
+
+  .card-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 10px;
+  }
+
+  .card-value {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 32px;
+    font-weight: 600;
+    color: var(--white);
+    line-height: 1;
+    margin-bottom: 6px;
+  }
+
+  .card-value.green { color: var(--green); }
+  .card-value.amber { color: var(--amber); }
+
+  .card-sub {
+    font-size: 11px;
+    color: var(--text-dim);
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  /* Wide card for routing */
+  .card-wide {
+    grid-column: span 2;
+  }
+
+  /* Bar chart */
+  .bar-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+
+  .bar-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+    width: 120px;
+    flex-shrink: 0;
+  }
+
+  .bar-track {
+    flex: 1;
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.6s ease;
+  }
+
+  .bar-fill.green { background: var(--green); }
+  .bar-fill.amber { background: var(--amber); }
+
+  .bar-count {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--text);
+    width: 40px;
+    text-align: right;
+  }
+
+  /* Log */
+  .log-section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 20px;
+    margin-top: 24px;
+  }
+
+  .log-header {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .log-entry {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--text-dim);
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    gap: 16px;
+  }
+
+  .log-entry:last-child { border-bottom: none; }
+  .log-time { color: var(--text-dim); width: 80px; flex-shrink: 0; }
+  .log-msg { color: var(--text); }
+  .tag {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+  .tag.hit { background: rgba(0,255,135,0.15); color: var(--green); }
+  .tag.miss { background: rgba(255,184,0,0.1); color: var(--amber); }
+  .tag.upstream { background: rgba(255,255,255,0.05); color: var(--text-dim); }
+
+  /* Refresh */
+  .refresh-btn {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    background: var(--green-muted);
+    border: 1px solid var(--border);
+    color: var(--green);
+    padding: 4px 12px;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .refresh-btn:hover { background: rgba(0,255,135,0.15); }
+
+  /* Empty state */
+  .empty {
+    text-align: center;
+    color: var(--text-dim);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    padding: 24px 0;
+  }
+
+  @media (max-width: 600px) {
+    .card-wide { grid-column: span 1; }
+    .card-value { font-size: 24px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="logo">EcoPrompt</span>
+  <span class="version">v0.4.0</span>
+  <span class="status-label" style="margin-left:auto; margin-right:8px">proxy running</span>
+  <span class="status-dot"></span>
+</header>
+
+<div class="grid">
+  <div class="card highlight">
+    <div class="card-label">Estimated Savings</div>
+    <div class="card-value green" id="savings">$0.00</div>
+    <div class="card-sub" id="tokens-saved">0 tokens saved</div>
+  </div>
+
+  <div class="card">
+    <div class="card-label">Requests Proxied</div>
+    <div class="card-value" id="requests">0</div>
+    <div class="card-sub">total intercepted</div>
+  </div>
+
+  <div class="card">
+    <div class="card-label">Cache Hit Rate</div>
+    <div class="card-value amber" id="hit-rate">0%</div>
+    <div class="card-sub" id="cache-hits">0 hits</div>
+  </div>
+
+  <div class="card">
+    <div class="card-label">Tokens In / Out</div>
+    <div class="card-value" id="tokens-in">0</div>
+    <div class="card-sub" id="tokens-out">0 tokens out</div>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card card-wide">
+    <div class="card-label" style="margin-bottom:16px">Routing Distribution</div>
+    <div class="bar-row">
+      <span class="bar-label">gpt-4o-mini</span>
+      <div class="bar-track">
+        <div class="bar-fill green" id="bar-cheap" style="width:0%"></div>
+      </div>
+      <span class="bar-count" id="count-cheap">0</span>
+    </div>
+    <div class="bar-row">
+      <span class="bar-label">gpt-4o</span>
+      <div class="bar-track">
+        <div class="bar-fill amber" id="bar-powerful" style="width:0%"></div>
+      </div>
+      <span class="bar-count" id="count-powerful">0</span>
+    </div>
+    <div class="bar-row">
+      <span class="bar-label">cache hits</span>
+      <div class="bar-track">
+        <div class="bar-fill" id="bar-cache" style="width:0%; background:#4a9eff"></div>
+      </div>
+      <span class="bar-count" id="count-cache">0</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label">Compression Savings</div>
+    <div class="card-value green" id="compression-ratio">0x</div>
+    <div class="card-sub" id="compression-sub">avg compression ratio</div>
+  </div>
+</div>
+
+<div class="log-section">
+  <div class="log-header">
+    <span>Activity Log</span>
+    <button class="refresh-btn" onclick="fetchStats()">↻ Refresh</button>
+  </div>
+  <div id="log-entries">
+    <div class="empty">No activity yet. Send a request through the proxy to see it here.</div>
+  </div>
+</div>
+
+<script>
+  let prevRequests = 0;
+  const logEntries = [];
+
+  async function fetchStats() {
+    try {
+      const res = await fetch('http://localhost:8000/stats');
+      const data = await res.json();
+      updateDashboard(data);
+    } catch (e) {
+      console.error('Could not reach proxy:', e);
+    }
+  }
+
+  function updateDashboard(d) {
+    // Cards
+    document.getElementById('savings').textContent =
+      '$' + (d.estimated_savings_usd || 0).toFixed(4);
+    document.getElementById('tokens-saved').textContent =
+      (d.tokens_saved_by_compression || 0).toLocaleString() + ' tokens saved';
+    document.getElementById('requests').textContent =
+      (d.requests_proxied || 0).toLocaleString();
+    document.getElementById('hit-rate').textContent =
+      (d.cache_hit_rate_pct || 0) + '%';
+    document.getElementById('cache-hits').textContent =
+      (d.cache_hits || 0) + ' hits';
+    document.getElementById('tokens-in').textContent =
+      (d.tokens_in || 0).toLocaleString();
+    document.getElementById('tokens-out').textContent =
+      (d.tokens_out || 0).toLocaleString() + ' tokens out';
+
+    // Routing bars
+    const cheap = d.routes_to_cheap_model || 0;
+    const powerful = d.routes_to_powerful_model || 0;
+    const cache = d.cache_hits || 0;
+    const total = cheap + powerful + cache || 1;
+
+    document.getElementById('bar-cheap').style.width = (cheap / total * 100) + '%';
+    document.getElementById('bar-powerful').style.width = (powerful / total * 100) + '%';
+    document.getElementById('bar-cache').style.width = (cache / total * 100) + '%';
+    document.getElementById('count-cheap').textContent = cheap;
+    document.getElementById('count-powerful').textContent = powerful;
+    document.getElementById('count-cache').textContent = cache;
+
+    // Compression ratio
+    const tokensIn = d.tokens_in || 0;
+    const saved = d.tokens_saved_by_compression || 0;
+    const original = tokensIn + saved;
+    const ratio = original > 0 ? (original / Math.max(tokensIn, 1)).toFixed(1) : '—';
+    document.getElementById('compression-ratio').textContent = ratio + 'x';
+
+    // Log new activity
+    const current = d.requests_proxied || 0;
+    if (current > prevRequests) {
+      const newCount = current - prevRequests;
+      const now = new Date().toLocaleTimeString();
+      for (let i = 0; i < newCount; i++) {
+        logEntries.unshift({ time: now, requests: current, data: d });
+      }
+      prevRequests = current;
+      renderLog(d);
+    }
+  }
+
+  function renderLog(d) {
+    const container = document.getElementById('log-entries');
+    if (logEntries.length === 0) return;
+
+    container.innerHTML = logEntries.slice(0, 20).map((e, i) => {
+      const isCache = i === 0 && d.cache_hits > 0;
+      const tag = isCache
+        ? '<span class="tag hit">cache hit</span>'
+        : '<span class="tag upstream">upstream</span>';
+      return `<div class="log-entry">
+        <span class="log-time">${e.time}</span>
+        <span class="log-msg">Request #${e.requests} ${tag}</span>
+      </div>`;
+    }).join('');
+  }
+
+  // Poll every 3 seconds
+  fetchStats();
+  setInterval(fetchStats, 3000);
+</script>
+</body>
+</html>
