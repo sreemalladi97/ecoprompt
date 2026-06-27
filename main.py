@@ -1,6 +1,6 @@
 """
 EcoPrompt - Developer Middleware Proxy
-Step 3: Semantic Cache added
+Step 4: Routing Matrix added
 """
 
 import time
@@ -17,7 +17,7 @@ logger = logging.getLogger("ecoprompt")
 app = FastAPI(
     title="EcoPrompt",
     description="Smart middleware proxy to slash AI token usage and cost",
-    version="0.3.0",
+    version="0.4.0",
 )
 
 
@@ -25,8 +25,8 @@ app = FastAPI(
 async def health():
     return {
         "status": "ok",
-        "version": "0.3.0",
-        "features": ["token_compression", "semantic_cache"],
+        "version": "0.4.0",
+        "features": ["token_compression", "semantic_cache", "routing_matrix"],
     }
 
 
@@ -42,6 +42,8 @@ async def stats():
         "tokens_saved_by_compression": app.state.tokens_saved,
         "cache_hits": hits,
         "cache_hit_rate_pct": hit_rate,
+        "routes_to_cheap_model": app.state.cheap_routes,
+        "routes_to_powerful_model": app.state.powerful_routes,
         "estimated_savings_usd": round(app.state.estimated_savings, 4),
     }
 
@@ -60,11 +62,8 @@ async def chat_completions(request: Request):
     messages = body.get("messages", [])
     logger.info(f"[{request_id}] Incoming | model={model} | messages={len(messages)}")
 
-    # -----------------------------------------------------------------------
     # PHASE 3: Semantic cache check
-    # -----------------------------------------------------------------------
     use_cache = request.headers.get("x-ecoprompt-cache", "true").lower() != "false"
-
     if use_cache:
         try:
             from core.cache import cache_lookup
@@ -89,12 +88,9 @@ async def chat_completions(request: Request):
         except Exception as e:
             logger.warning(f"[{request_id}] Cache lookup skipped: {e}")
 
-    # -----------------------------------------------------------------------
     # PHASE 2: Token compression
-    # -----------------------------------------------------------------------
     compression_stats = {"tokens_saved": 0, "compression_ratio": 1.0}
     compress = request.headers.get("x-ecoprompt-compress", "true").lower() != "false"
-
     if compress:
         try:
             from core.compressor import compress_messages
@@ -102,20 +98,32 @@ async def chat_completions(request: Request):
             body["messages"] = compressed_messages
             logger.info(
                 f"[{request_id}] Compressed | "
-                f"saved={compression_stats['tokens_saved']} tokens | "
-                f"ratio={compression_stats['compression_ratio']}x"
+                f"saved={compression_stats['tokens_saved']} tokens"
             )
         except Exception as e:
             logger.warning(f"[{request_id}] Compression skipped: {e}")
 
-    # PHASE 4 (coming): Routing matrix hooks in here
+    # PHASE 4: Routing matrix
+    use_router = request.headers.get("x-ecoprompt-route", "true").lower() != "false"
+    routed_model = model
+    if use_router:
+        try:
+            from core.router import route
+            routed_model = route(messages, model)
+            body["model"] = routed_model
+            if routed_model == "gpt-4o-mini":
+                app.state.cheap_routes += 1
+            else:
+                app.state.powerful_routes += 1
+        except Exception as e:
+            logger.warning(f"[{request_id}] Routing skipped: {e}")
 
     upstream_url = "https://api.openai.com/v1/chat/completions"
     forward_headers = {
         k: v for k, v in request.headers.items()
         if k.lower() not in {
             "host", "content-length", "transfer-encoding",
-            "x-ecoprompt-compress", "x-ecoprompt-cache",
+            "x-ecoprompt-compress", "x-ecoprompt-cache", "x-ecoprompt-route",
         }
     }
 
@@ -144,7 +152,6 @@ async def chat_completions(request: Request):
     app.state.tokens_saved += tokens_saved
     app.state.estimated_savings += (tokens_saved / 1000) * 0.01
 
-    # Store in cache for future requests
     if use_cache:
         try:
             from core.cache import cache_store
@@ -154,7 +161,7 @@ async def chat_completions(request: Request):
 
     log_request(
         request_id=request_id,
-        model=model,
+        model=routed_model,
         tokens_in=tokens_in,
         tokens_out=tokens_out,
         latency_ms=latency_ms,
@@ -163,12 +170,13 @@ async def chat_completions(request: Request):
     )
 
     logger.info(
-        f"[{request_id}] Done | tokens_in={tokens_in} tokens_out={tokens_out} "
-        f"saved={tokens_saved} latency={latency_ms}ms"
+        f"[{request_id}] Done | model={routed_model} tokens_in={tokens_in} "
+        f"tokens_out={tokens_out} saved={tokens_saved} latency={latency_ms}ms"
     )
 
     response = JSONResponse(content=response_data, status_code=upstream.status_code)
     response.headers["x-ecoprompt-cache"] = "miss"
+    response.headers["x-ecoprompt-routed-model"] = routed_model
     response.headers["x-ecoprompt-tokens-saved"] = str(tokens_saved)
     return response
 
@@ -180,5 +188,7 @@ async def startup():
     app.state.tokens_out = 0
     app.state.tokens_saved = 0
     app.state.cache_hits = 0
+    app.state.cheap_routes = 0
+    app.state.powerful_routes = 0
     app.state.estimated_savings = 0.0
-    logger.info("EcoPrompt v0.3.0 started - Token compression + Semantic cache enabled")
+    logger.info("EcoPrompt v0.4.0 started - Compression + Cache + Routing enabled")
