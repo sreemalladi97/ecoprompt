@@ -12,8 +12,15 @@ logger = logging.getLogger("ecoprompt.cache")
 _embedder = None
 _qdrant = None
 
+# Cache statistics — tracks hits and misses for the dashboard
+_stats = {
+    "hits": 0,
+    "misses": 0,
+    "stores": 0,
+}
+
 COLLECTION_NAME = "ecoprompt_cache"
-SIMILARITY_THRESHOLD = 0.95
+SIMILARITY_THRESHOLD = 0.85
 
 
 def get_embedder():
@@ -69,9 +76,11 @@ def cache_lookup(messages: list) -> Optional[dict]:
         ).points
 
         if results:
+            _stats["hits"] += 1
             logger.info(f"Cache HIT (score={results[0].score:.3f})")
             return results[0].payload.get("response")
 
+        _stats["misses"] += 1
         logger.info("Cache MISS")
         return None
 
@@ -100,6 +109,23 @@ def cache_store(messages: list, response: dict):
             ],
         )
         logger.info(f"Cache stored (id={point_id})")
+        _stats["stores"] += 1
 
     except Exception as e:
         logger.warning(f"Cache store failed: {e}")
+
+def get_cache_stats() -> dict:
+    """
+    Returns current cache performance statistics.
+    Used by the dashboard to display hit/miss rates.
+    """
+    total = _stats["hits"] + _stats["misses"]
+    hit_rate = round(_stats["hits"] / total * 100, 1) if total > 0 else 0.0
+
+    return {
+        "hits": _stats["hits"],
+        "misses": _stats["misses"],
+        "stores": _stats["stores"],
+        "total_requests": total,
+        "hit_rate_percent": hit_rate,
+    }
