@@ -19,7 +19,7 @@ logger = logging.getLogger("ecoprompt")
 app = FastAPI(
     title="EcoPrompt",
     description="Smart middleware proxy to slash AI token usage and cost",
-    version="0.4.1",
+    version="0.5.0",
 )
 
 app.add_middleware(
@@ -47,8 +47,13 @@ def detect_provider(model: str, auth_header: str):
 async def health():
     return {
         "status": "ok",
-        "version": "0.4.1",
+        "version": "0.5.0",
         "features": ["token_compression", "semantic_cache", "routing_matrix"],
+        "routing_tiers": {
+            "simple":  "openai/gpt-oss-20b",
+            "medium":  "qwen/qwen3.6-27b",
+            "complex": "openai/gpt-oss-120b",
+        },
     }
 
 
@@ -64,8 +69,10 @@ async def stats():
         "tokens_saved_by_compression": app.state.tokens_saved,
         "cache_hits": hits,
         "cache_hit_rate_pct": hit_rate,
-        "routes_to_cheap_model": app.state.cheap_routes,
-        "routes_to_powerful_model": app.state.powerful_routes,
+        # 3-tier routing breakdown
+        "routes_to_cheap_model":    app.state.simple_routes,
+        "routes_to_medium_model":   app.state.medium_routes,
+        "routes_to_powerful_model": app.state.complex_routes,
         "estimated_savings_usd": round(app.state.estimated_savings, 4),
     }
 
@@ -119,28 +126,33 @@ async def chat_completions(request: Request):
         except Exception as e:
             logger.warning(f"[{request_id}] Compression skipped: {e}")
 
-    # PHASE 4: Routing
+    # PHASE 4: 3-tier Routing
     routed_model = clean_model
-    if not model.startswith("groq/"):
-        use_router = request.headers.get("x-ecoprompt-route", "true").lower() != "false"
-        if use_router:
-            try:
-                from core.router import route
-                routed_model = route(messages, clean_model)
-                body["model"] = routed_model
-                if "mini" in routed_model:
-                    app.state.cheap_routes += 1
-                else:
-                    app.state.powerful_routes += 1
-            except Exception as e:
-                logger.warning(f"[{request_id}] Routing skipped: {e}")
+    route_tier = "none"
+    use_router = request.headers.get("x-ecoprompt-route", "true").lower() != "false"
+    if use_router:
+        try:
+            from core.router import route, classify
+            route_tier = classify(messages)
+            routed_model = route(messages, clean_model)
+            body["model"] = routed_model
+
+            if route_tier == "simple":
+                app.state.simple_routes += 1
+            elif route_tier == "medium":
+                app.state.medium_routes += 1
+            else:
+                app.state.complex_routes += 1
+
+        except Exception as e:
+            logger.warning(f"[{request_id}] Routing skipped: {e}")
 
     forward_headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
 
-    logger.info(f"[{request_id}] Sending to {upstream_url} | model={body['model']}")
+    logger.info(f"[{request_id}] Sending to {upstream_url} | model={body['model']} | tier={route_tier}")
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
@@ -178,13 +190,14 @@ async def chat_completions(request: Request):
                 tokens_out=tokens_out, latency_ms=latency_ms, cache_hit=False, source="upstream")
 
     logger.info(
-        f"[{request_id}] Done | model={routed_model} tokens_in={tokens_in} "
-        f"tokens_out={tokens_out} saved={tokens_saved} latency={latency_ms}ms"
+        f"[{request_id}] Done | model={routed_model} tier={route_tier} "
+        f"tokens_in={tokens_in} tokens_out={tokens_out} saved={tokens_saved} latency={latency_ms}ms"
     )
 
     response = JSONResponse(content=response_data, status_code=upstream.status_code)
     response.headers["x-ecoprompt-cache"] = "miss"
     response.headers["x-ecoprompt-routed-model"] = routed_model
+    response.headers["x-ecoprompt-route-tier"] = route_tier
     response.headers["x-ecoprompt-tokens-saved"] = str(tokens_saved)
     return response
 
@@ -196,7 +209,8 @@ async def startup():
     app.state.tokens_out = 0
     app.state.tokens_saved = 0
     app.state.cache_hits = 0
-    app.state.cheap_routes = 0
-    app.state.powerful_routes = 0
+    app.state.simple_routes = 0
+    app.state.medium_routes = 0
+    app.state.complex_routes = 0
     app.state.estimated_savings = 0.0
-    logger.info("EcoPrompt v0.4.1 started - Compression + Cache + Routing + Multi-provider")
+    logger.info("EcoPrompt v0.5.0 started - 3-tier routing (simple/medium/complex)")

@@ -1,83 +1,78 @@
 """
-EcoPrompt - Routing Matrix
-Classifies prompt complexity and routes to the appropriate model.
-Simple tasks → cheap model (gpt-4o-mini)
-Complex tasks → powerful model (gpt-4o)
+EcoPrompt - core/router.py
+3-tier routing matrix for Groq models (all free tier)
 """
 
 import logging
 
-logger = logging.getLogger("ecoprompt.router")
+logger = logging.getLogger("ecoprompt")
 
-# Model tiers (swap these out for any LiteLLM-supported models)
-CHEAP_MODEL = "gpt-4o-mini"    # ~20x cheaper than gpt-4o
-POWERFUL_MODEL = "gpt-4o"      # for complex tasks
+# ── Model tiers ───────────────────────────────────────────────────────────────
+TIER_MODELS = {
+    "simple":  "openai/gpt-oss-20b",    # fast, cheap — replaces llama-3.1-8b-instant
+    "medium":  "qwen/qwen3.6-27b",      # balanced reasoning
+    "complex": "openai/gpt-oss-120b",   # heavy lifting (code, math, long context)
+}
 
-# Keywords that signal a complex task
-COMPLEX_KEYWORDS = [
-    # Code
-    "code", "debug", "function", "class", "algorithm", "implement",
-    "refactor", "optimize", "bug", "error", "script", "program",
-    # Reasoning
-    "analyze", "compare", "evaluate", "critique", "explain why",
-    "pros and cons", "trade-off", "difference between",
-    # Multi-step
-    "step by step", "plan", "strategy", "design", "architect",
-    "how should i", "what is the best way",
-    # Long-form
-    "write a report", "write an essay", "detailed", "comprehensive",
+# ── Keyword signals ───────────────────────────────────────────────────────────
+COMPLEX_SIGNALS = [
+    "def ", "class ", "function(", "```", "SELECT ", "FROM ",  # code
+    "debug", "refactor", "implement", "system architecture", "design the architecture",  # engineering
+    "analyze", "compare", "evaluate", "critique",               # deep reasoning
+    "step by step", "explain in detail", "write a",             # long-form
 ]
 
-# Token threshold — long prompts are usually complex
-LONG_PROMPT_THRESHOLD = 200  # words
+MEDIUM_SIGNALS = [
+    "explain", "summarize", "how does",
+    "describe in detail", "outline", "pros and cons",
+    "difference between", "why does", "when should",
+    "compare", "give me an overview",
+]
 
-
+# ── Classifier ────────────────────────────────────────────────────────────────
 def classify(messages: list) -> str:
     """
-    Classify the complexity of a request.
-    Returns: "simple" or "complex"
+    Returns 'simple', 'medium', or 'complex' based on prompt content and length.
+    Checks the last user message (most relevant signal).
     """
-    # Combine all message content for analysis
-    full_text = " ".join(
-        m.get("content", "") for m in messages
-    ).lower()
+    user_text = ""
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            user_text = m.get("content", "")
+            break
 
-    word_count = len(full_text.split())
+    word_count = len(user_text.split())
+    lower = user_text.lower()
 
-    # Rule 1: Long prompts are complex
-    if word_count > LONG_PROMPT_THRESHOLD:
-        logger.debug(f"Complex: long prompt ({word_count} words)")
+    # Length alone can force a tier upgrade
+    if word_count > 300:
         return "complex"
-
-    # Rule 2: Complex keywords present
-    for keyword in COMPLEX_KEYWORDS:
-        if keyword in full_text:
-            logger.debug(f"Complex: keyword '{keyword}' found")
+    if word_count > 80:
+        # Still check signals before committing to medium
+        if any(sig in user_text for sig in COMPLEX_SIGNALS):
             return "complex"
+        return "medium"
 
-    logger.debug("Simple: no complexity signals found")
+    # Short prompts: check signals
+    if any(sig in user_text for sig in COMPLEX_SIGNALS):
+        return "complex"
+    if any(sig in lower for sig in MEDIUM_SIGNALS):
+        return "medium"
+
     return "simple"
 
 
+# ── Public entry point ────────────────────────────────────────────────────────
 def route(messages: list, requested_model: str) -> str:
     """
-    Decide which model to use based on prompt complexity.
-
-    Args:
-        messages: The conversation messages
-        requested_model: The model the client originally requested
-
-    Returns:
-        The model name to actually use
+    Returns the model name to actually send to Groq.
+    Falls back to the requested model if classification fails.
     """
-    complexity = classify(messages)
-
-    if complexity == "simple":
-        chosen = CHEAP_MODEL
-        reason = "simple task → cheap model"
-    else:
-        chosen = POWERFUL_MODEL
-        reason = "complex task → powerful model"
-
-    logger.info(f"Router: {requested_model} → {chosen} ({reason})")
-    return chosen
+    try:
+        tier = classify(messages)
+        chosen = TIER_MODELS[tier]
+        logger.info(f"Router: {requested_model} → {chosen} (tier={tier})")
+        return chosen
+    except Exception as e:
+        logger.warning(f"Router fallback to requested model: {e}")
+        return requested_model
