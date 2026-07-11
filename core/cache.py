@@ -11,6 +11,7 @@ logger = logging.getLogger("ecoprompt.cache")
 
 _embedder = None
 _qdrant = None
+_validator = None
 
 # Cache statistics — tracks hits and misses for the dashboard
 _stats = {
@@ -50,6 +51,38 @@ def get_qdrant():
             logger.info(f"Created Qdrant collection: {COLLECTION_NAME}")
     return _qdrant
 
+def get_validator():
+    global _validator
+    if _validator is None:
+        logger.info("Loading cross-encoder validator model...")
+        from sentence_transformers import CrossEncoder
+        _validator = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+        logger.info("Validator loaded.")
+    return _validator
+
+def validate_answer(question: str, answer: str, qdrant_score: float = 0.0) -> bool:
+    """
+    Checks whether a cached answer actually answers the given question.
+    Uses a cross-encoder to score relevance between question and answer.
+
+    Returns True if the answer is relevant, False if it should be rejected.
+    """
+    try:
+        validator = get_validator()
+
+        # Cross-encoder scores the question+answer pair together
+        score = validator.predict([(question, answer)])
+
+        # Score is a raw logit — higher means more relevant
+        # Threshold of 0 is a safe starting point based on ms-marco model behavior
+        is_valid = float(score[0]) > 5.0 or (float(score[0]) > 3.0 and qdrant_score > 0.92)
+
+        logger.info(f"Validator score: {score[0]:.3f} → {'VALID ✅' if is_valid else 'REJECTED ❌'}")
+        return is_valid
+
+    except Exception as e:
+        logger.warning(f"Validation failed, defaulting to accept: {e}")
+        return True  # if validator breaks, don't block the cache from working
 
 def _messages_to_text(messages: list) -> str:
     return " ".join(
@@ -76,9 +109,24 @@ def cache_lookup(messages: list) -> Optional[dict]:
         ).points
 
         if results:
-            _stats["hits"] += 1
-            logger.info(f"Cache HIT (score={results[0].score:.3f})")
-            return results[0].payload.get("response")
+            cached_response = results[0].payload.get("response")
+
+            # Extract the answer text for validation
+            answer_text = ""
+            if isinstance(cached_response, dict):
+                answer_text = cached_response.get("content", "")
+            elif isinstance(cached_response, str):
+                answer_text = cached_response
+
+            # Validate that the cached answer actually answers the new question
+            if validate_answer(text, answer_text, qdrant_score=results[0].score):
+                _stats["hits"] += 1
+                logger.info(f"Cache HIT (score={results[0].score:.3f})")
+                return cached_response
+            else:
+                _stats["misses"] += 1
+                logger.info("Cache HIT rejected by validator — sending to LLM")
+                return None
 
         _stats["misses"] += 1
         logger.info("Cache MISS")
