@@ -1,0 +1,6 @@
+{
+  "language": "JavaScript",
+  "framework": "React",
+  "database": "MongoDB",
+  "project": "claims api"
+}
