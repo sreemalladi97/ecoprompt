@@ -140,6 +140,22 @@ def cache_lookup(messages: list) -> Optional[dict]:
 def cache_store(messages: list, response: dict):
     try:
         text = _messages_to_text(messages)
+
+        # Extract answer text for quality check
+        answer_text = ""
+        if isinstance(response, dict):
+            answer_text = response.get("content", "")
+        elif isinstance(response, str):
+            answer_text = response
+
+        # Validate answer quality before storing
+        # Use a lower threshold here than lookup — we want to be lenient
+        # about storing but strict about retrieving
+        if answer_text and not validate_answer(text, answer_text, qdrant_score=1.0):
+            logger.warning("Answer quality too low — skipping cache store")
+            _stats["rejected_stores"] = _stats.get("rejected_stores", 0) + 1
+            return
+
         embedder = get_embedder()
         qdrant = get_qdrant()
         vector = embedder.encode(text).tolist()
@@ -174,6 +190,7 @@ def get_cache_stats() -> dict:
         "hits": _stats["hits"],
         "misses": _stats["misses"],
         "stores": _stats["stores"],
+        "rejected_stores": _stats.get("rejected_stores", 0),
         "total_requests": total,
         "hit_rate_percent": hit_rate,
     }
