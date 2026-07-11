@@ -85,9 +85,13 @@ def validate_answer(question: str, answer: str, qdrant_score: float = 0.0) -> bo
         return True  # if validator breaks, don't block the cache from working
 
 def _messages_to_text(messages: list) -> str:
-    return " ".join(
-        f"{m.get('role','')}: {m.get('content','')}" for m in messages
-    ).strip()
+    # Only use user messages for cache key — ignore injected system context
+    # This ensures memory injection doesn't break cache matching
+    user_messages = [
+        m.get("content", "") for m in messages
+        if m.get("role") == "user"
+    ]
+    return " ".join(user_messages).strip()
 
 
 def _make_id(text: str) -> int:
