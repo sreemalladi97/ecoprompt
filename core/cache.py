@@ -40,7 +40,7 @@ def get_qdrant():
         from qdrant_client import QdrantClient
         from qdrant_client.models import Distance, VectorParams
 
-        _qdrant = QdrantClient(location=":memory:")
+        _qdrant = QdrantClient(path="./qdrant_storage")
 
         existing = [c.name for c in _qdrant.get_collections().collections]
         if COLLECTION_NAME not in existing:
