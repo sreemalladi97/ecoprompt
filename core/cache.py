@@ -21,7 +21,7 @@ _stats = {
 }
 
 COLLECTION_NAME = "ecoprompt_cache"
-SIMILARITY_THRESHOLD = 0.85
+SIMILARITY_THRESHOLD = 0.80
 
 
 def get_embedder():
@@ -56,33 +56,25 @@ def get_validator():
     if _validator is None:
         logger.info("Loading cross-encoder validator model...")
         from sentence_transformers import CrossEncoder
-        _validator = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+        _validator = CrossEncoder("cross-encoder/quora-roberta-base")
         logger.info("Validator loaded.")
     return _validator
 
-def validate_answer(question: str, answer: str, qdrant_score: float = 0.0) -> bool:
+def validate_prompt_match(new_question: str, cached_question: str, qdrant_score: float = 0.0) -> bool:
     """
-    Checks whether a cached answer actually answers the given question.
-    Uses a cross-encoder to score relevance between question and answer.
-
-    Returns True if the answer is relevant, False if it should be rejected.
+    Checks whether the new question and cached question mean the same thing.
+    Uses a duplicate-question cross-encoder trained specifically for this task.
+    Returns True if questions are equivalent, False if they should not share a cached answer.
     """
     try:
         validator = get_validator()
-
-        # Cross-encoder scores the question+answer pair together
-        score = validator.predict([(question, answer)])
-
-        # Score is a raw logit — higher means more relevant
-        # Threshold of 0 is a safe starting point based on ms-marco model behavior
-        is_valid = float(score[0]) > 5.0 or (float(score[0]) > 3.0 and qdrant_score > 0.92)
-
-        logger.info(f"Validator score: {score[0]:.3f} → {'VALID ✅' if is_valid else 'REJECTED ❌'}")
+        score = float(validator.predict([(new_question, cached_question)])[0])
+        is_valid = score >= 0.75
+        logger.info(f"Prompt validator score: {score:.3f} → {'VALID ✅' if is_valid else 'REJECTED ❌'}")
         return is_valid
-
     except Exception as e:
-        logger.warning(f"Validation failed, defaulting to accept: {e}")
-        return True  # if validator breaks, don't block the cache from working
+        logger.warning(f"Prompt validation failed, defaulting to reject: {e}")
+        return False
 
 def _messages_to_text(messages: list) -> str:
     # Only use user messages for cache key — ignore injected system context
@@ -97,6 +89,9 @@ def _messages_to_text(messages: list) -> str:
 def _make_id(text: str) -> int:
     return int(hashlib.md5(text.encode()).hexdigest()[:8], 16)
 
+def _normalize(text: str) -> str:
+    """Normalize text for exact match comparison."""
+    return " ".join(text.lower().strip().split())
 
 def cache_lookup(messages: list) -> Optional[dict]:
     try:
@@ -114,23 +109,23 @@ def cache_lookup(messages: list) -> Optional[dict]:
 
         if results:
             cached_response = results[0].payload.get("response")
+            cached_prompt = results[0].payload.get("prompt", "")
 
-            # Extract the answer text for validation
-            answer_text = ""
-            if isinstance(cached_response, dict):
-                answer_text = cached_response.get("content", "")
-            elif isinstance(cached_response, str):
-                answer_text = cached_response
-
-            # Validate that the cached answer actually answers the new question
-            if validate_answer(text, answer_text, qdrant_score=results[0].score):
+            # Exact normalized match — skip validator entirely
+            if _normalize(text) == _normalize(cached_prompt):
                 _stats["hits"] += 1
-                logger.info(f"Cache HIT (score={results[0].score:.3f})")
+                logger.info("Cache HIT — exact match, skipping validator")
                 return cached_response
-            else:
-                _stats["misses"] += 1
-                logger.info("Cache HIT rejected by validator — sending to LLM")
-                return None
+
+            # Validate question equivalence — new question vs cached question
+            if validate_prompt_match(text, cached_prompt, qdrant_score=results[0].score):
+                _stats["hits"] += 1
+                logger.info(f"Cache HIT (qdrant={results[0].score:.3f})")
+                return cached_response
+
+            _stats["misses"] += 1
+            logger.info("Candidate rejected — intent mismatch, sending to LLM")
+            return None
 
         _stats["misses"] += 1
         logger.info("Cache MISS")
@@ -145,19 +140,22 @@ def cache_store(messages: list, response: dict):
     try:
         text = _messages_to_text(messages)
 
-        # Extract answer text for quality check
+        # Only skip storing if answer is empty
         answer_text = ""
         if isinstance(response, dict):
+            # Try direct content first
             answer_text = response.get("content", "")
+            # If empty, try nested Groq/OpenAI response structure
+            if not answer_text:
+                try:
+                    answer_text = response["choices"][0]["message"]["content"]
+                except (KeyError, IndexError):
+                    pass
         elif isinstance(response, str):
             answer_text = response
 
-        # Validate answer quality before storing
-        # Use a lower threshold here than lookup — we want to be lenient
-        # about storing but strict about retrieving
-        if answer_text and not validate_answer(text, answer_text, qdrant_score=1.0):
-            logger.warning("Answer quality too low — skipping cache store")
-            _stats["rejected_stores"] = _stats.get("rejected_stores", 0) + 1
+        if not answer_text.strip():
+            logger.warning("Empty answer — skipping cache store")
             return
 
         embedder = get_embedder()
