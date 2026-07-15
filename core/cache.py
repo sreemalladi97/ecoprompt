@@ -21,7 +21,8 @@ _stats = {
 }
 
 COLLECTION_NAME = "ecoprompt_cache"
-SIMILARITY_THRESHOLD = 0.80
+RETRIEVAL_THRESHOLD = 0.65  # wide net for candidates
+VALIDATOR_THRESHOLD = 0.75  # strict gate for acceptance
 
 
 def get_embedder():
@@ -69,7 +70,7 @@ def validate_prompt_match(new_question: str, cached_question: str, qdrant_score:
     try:
         validator = get_validator()
         score = float(validator.predict([(new_question, cached_question)])[0])
-        is_valid = score >= 0.75
+        is_valid = score >= VALIDATOR_THRESHOLD
         logger.info(f"Prompt validator score: {score:.3f} → {'VALID ✅' if is_valid else 'REJECTED ❌'}")
         return is_valid
     except Exception as e:
@@ -103,13 +104,13 @@ def cache_lookup(messages: list) -> Optional[dict]:
         results = qdrant.query_points(
             collection_name=COLLECTION_NAME,
             query=vector,
-            limit=1,
-            score_threshold=SIMILARITY_THRESHOLD,
+            limit=5,
+            score_threshold=RETRIEVAL_THRESHOLD,
         ).points
 
-        if results:
-            cached_response = results[0].payload.get("response")
-            cached_prompt = results[0].payload.get("prompt", "")
+        for result in results:
+            cached_response = result.payload.get("response")
+            cached_prompt = result.payload.get("prompt", "")
 
             # Exact normalized match — skip validator entirely
             if _normalize(text) == _normalize(cached_prompt):
@@ -117,20 +118,16 @@ def cache_lookup(messages: list) -> Optional[dict]:
                 logger.info("Cache HIT — exact match, skipping validator")
                 return cached_response
 
-            # Validate question equivalence — new question vs cached question
-            if validate_prompt_match(text, cached_prompt, qdrant_score=results[0].score):
+            # Validate question equivalence
+            if validate_prompt_match(text, cached_prompt, qdrant_score=result.score):
                 _stats["hits"] += 1
-                logger.info(f"Cache HIT (qdrant={results[0].score:.3f})")
+                logger.info(f"Cache HIT (qdrant={result.score:.3f})")
                 return cached_response
-
-            _stats["misses"] += 1
-            logger.info("Candidate rejected — intent mismatch, sending to LLM")
-            return None
 
         _stats["misses"] += 1
         logger.info("Cache MISS")
         return None
-
+    
     except Exception as e:
         logger.warning(f"Cache lookup failed: {e}")
         return None
@@ -170,7 +167,7 @@ def cache_store(messages: list, response: dict):
                 PointStruct(
                     id=point_id,
                     vector=vector,
-                    payload={"response": response, "prompt": text[:500]},
+                    payload={"response": response, "prompt": text},
                 )
             ],
         )
