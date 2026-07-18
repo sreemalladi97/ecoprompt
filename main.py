@@ -166,6 +166,7 @@ async def stats():
         "routes_to_powerful_model": app.state.complex_routes,
         "fallback_model_used":     app.state.fallback_used,
         "estimated_savings_usd": round(app.state.estimated_savings, 4),
+        "savings_excluded_unpriced_models": sorted(app.state.unpriced_models_seen),
     }
 
 
@@ -400,7 +401,18 @@ async def chat_completions(request: Request):
     app.state.tokens_in += tokens_in
     app.state.tokens_out += tokens_out
     app.state.tokens_saved += tokens_saved
-    app.state.estimated_savings += (tokens_saved / 1000) * 0.01
+
+    if tokens_saved > 0:
+        # Priced at the model actually used for this request, not a flat
+        # guessed rate — see core/pricing.py. Unpriced models contribute
+        # nothing to the dollar total rather than a made-up number, but
+        # are tracked so /stats can say so instead of silently omitting them.
+        from core.pricing import estimate_input_cost_usd
+        cost = estimate_input_cost_usd(routed_model, tokens_saved)
+        if cost is not None:
+            app.state.estimated_savings += cost
+        else:
+            app.state.unpriced_models_seen.add(routed_model)
 
     if use_cache:
         try:
@@ -450,4 +462,5 @@ async def startup():
     app.state.complex_routes = 0
     app.state.fallback_used = 0
     app.state.estimated_savings = 0.0
+    app.state.unpriced_models_seen = set()
     logger.info("EcoPrompt v0.5.0 started - 3-tier routing (simple/medium/complex) with per-tier fallbacks")

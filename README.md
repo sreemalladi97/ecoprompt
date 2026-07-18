@@ -75,6 +75,12 @@ Compression is lossy, so whenever it actually saves tokens, the pre-compression 
 
 Prompts are classified as `simple`, `medium`, or `complex` based on length and keyword signals (see `core/router.py`). Each tier has a primary model and one automatic fallback on Groq's free tier, if the primary errors out or gets decommissioned, the fallback takes over automatically. Run `python scripts/check_models.py` periodically to catch decommissioned models before they cause a problem in production.
 
+## Pricing / `estimated_savings_usd`
+
+`tokens_saved_by_compression` is valued at each model's actual published Groq on-demand rate (see `core/pricing.py`), not one flat guessed rate — a request routed to `gpt-oss-120b` and one routed to `qwen3.6-27b` are priced differently because they really do cost differently. Only models with a rate Groq actually publishes are priced; anything else (e.g. `groq/compound-mini`, a compound system whose cost passes through to whatever it invokes at runtime rather than a fixed per-token rate, or an unlisted preview model) is excluded from the dollar total and named in `savings_excluded_unpriced_models` instead of being guessed at.
+
+Two caveats worth knowing: this is Groq's **on-demand** rate — since the models this project routes to are actually on Groq's free developer tier, real billed cost is $0 regardless of what's shown here; treat the number as "what this would've cost on-demand," not an invoice. And prices/model lineups both drift over time, so re-verify `core/pricing.py` against [groq.com/pricing](https://groq.com/pricing) periodically, the same way `scripts/check_models.py` catches decommissioned models.
+
 ## Built on
 
 - [FastAPI](https://fastapi.tiangolo.com) — Proxy framework

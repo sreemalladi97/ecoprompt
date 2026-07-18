@@ -96,23 +96,51 @@ def get_summary():
     tier_rows = conn.execute("""
         SELECT route_tier, COUNT(*) AS n FROM requests GROUP BY route_tier
     """).fetchall()
+
+    # Tokens saved at Groq's real per-model rate, not one flat guessed
+    # rate — compression only ever reduces input tokens, so this is
+    # valued at each model's actual input price. Grouped by model since
+    # different requests can route to different models.
+    savings_rows = conn.execute("""
+        SELECT model, COALESCE(SUM(tokens_saved), 0) AS tokens_saved
+        FROM requests
+        WHERE tokens_saved > 0
+        GROUP BY model
+    """).fetchall()
     conn.close()
+
+    from core.pricing import estimate_input_cost_usd
+
+    estimated_savings_usd = 0.0
+    unpriced_models = set()
+    for row in savings_rows:
+        cost = estimate_input_cost_usd(row["model"], row["tokens_saved"])
+        if cost is None:
+            unpriced_models.add(row["model"])
+            continue
+        estimated_savings_usd += cost
 
     tier_counts = {row["route_tier"]: row["n"] for row in tier_rows}
     total = totals["requests_proxied"]
     hits = totals["cache_hits"]
-    tokens_saved = totals["tokens_saved_by_compression"]
 
     return {
         "requests_proxied": total,
         "tokens_in": totals["tokens_in"],
         "tokens_out": totals["tokens_out"],
-        "tokens_saved_by_compression": tokens_saved,
+        "tokens_saved_by_compression": totals["tokens_saved_by_compression"],
         "cache_hits": hits,
         "cache_hit_rate_pct": round((hits / total * 100), 1) if total > 0 else 0.0,
         "routes_to_cheap_model": tier_counts.get("simple", 0),
         "routes_to_medium_model": tier_counts.get("medium", 0),
         "routes_to_powerful_model": tier_counts.get("complex", 0),
         "fallback_model_used": totals["fallback_model_used"],
-        "estimated_savings_usd": round((tokens_saved / 1000) * 0.01, 4),
+        # Illustrative only — priced at Groq's on-demand rate. If your
+        # traffic actually runs on Groq's free developer tier, real
+        # billed cost is $0 regardless of this number.
+        "estimated_savings_usd": round(estimated_savings_usd, 4),
+        # Models that had savings but no confirmed published Groq rate,
+        # so they're excluded from estimated_savings_usd above rather
+        # than guessed at — see core/pricing.py.
+        "savings_excluded_unpriced_models": sorted(unpriced_models),
     }
