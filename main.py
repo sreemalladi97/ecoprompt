@@ -178,8 +178,16 @@ async def chat_completions(request: Request):
                 app.state.cache_hits += 1
                 app.state.request_count += 1
                 latency_ms = round((time.time() - start) * 1000)
-                log_request(request_id=request_id, model=model, tokens_in=0,
-                            tokens_out=0, latency_ms=latency_ms, cache_hit=True, source="cache")
+                try:
+                    log_request(request_id=request_id, model=model, tokens_in=0,
+                                tokens_out=0, latency_ms=latency_ms, cache_hit=True, source="cache")
+                except Exception as log_err:
+                    # SQLite logging is a nice-to-have, not required for a
+                    # correct response (e.g. Vercel's filesystem is
+                    # read-only at runtime, so this always fails there —
+                    # that shouldn't turn a cache hit into a wasted
+                    # duplicate upstream call).
+                    logger.warning(f"[{request_id}] Request logging skipped: {log_err}")
                 logger.info(f"[{request_id}] Cache HIT | latency={latency_ms}ms")
                 response = JSONResponse(content=cached)
                 response.headers["x-ecoprompt-cache"] = "hit"
@@ -300,8 +308,14 @@ async def chat_completions(request: Request):
         except Exception as e:
             logger.warning(f"[{request_id}] Cache store skipped: {e}")
 
-    log_request(request_id=request_id, model=routed_model, tokens_in=tokens_in,
-                tokens_out=tokens_out, latency_ms=latency_ms, cache_hit=False, source="upstream")
+    try:
+        log_request(request_id=request_id, model=routed_model, tokens_in=tokens_in,
+                    tokens_out=tokens_out, latency_ms=latency_ms, cache_hit=False, source="upstream")
+    except Exception as log_err:
+        # Same reasoning as the cache-hit path above: a logging failure
+        # (e.g. read-only filesystem on Vercel) must not turn an
+        # otherwise-successful upstream response into a 500 error.
+        logger.warning(f"[{request_id}] Request logging skipped: {log_err}")
 
     logger.info(
         f"[{request_id}] Done | model={routed_model} tier={route_tier} "
