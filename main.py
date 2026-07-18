@@ -139,6 +139,13 @@ async def tester():
         raise HTTPException(status_code=404, detail="tester.html not found")
     return FileResponse(TESTER_PATH, media_type="text/html")
 
+CHAT_TESTER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tester_chat.html")
+
+@app.get("/chat-test")
+async def chat_tester():
+    if not os.path.exists(CHAT_TESTER_PATH):
+        raise HTTPException(status_code=404, detail="tester_chat.html not found")
+    return FileResponse(CHAT_TESTER_PATH, media_type="text/html")
 
 @app.get("/stats")
 async def stats():

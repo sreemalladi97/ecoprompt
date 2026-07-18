@@ -6,6 +6,7 @@ Uses sentence-transformers to embed prompts and Qdrant to find similar past answ
 import hashlib
 import logging
 from typing import Optional
+from core.rewriter import resolve_query, memory_fingerprint
 
 logger = logging.getLogger("ecoprompt.cache")
 
@@ -96,7 +97,18 @@ def _normalize(text: str) -> str:
 
 def cache_lookup(messages: list) -> Optional[dict]:
     try:
-        text = _messages_to_text(messages)
+        # Resolve context-dependent follow-ups into standalone queries
+        resolved_text, confidence = resolve_query(messages)
+
+        # Bypass cache if we can't resolve the query confidently
+        if confidence == 0.0:
+            _stats["misses"] += 1
+            logger.info("Cache bypassed — query too ambiguous to resolve")
+            return None
+
+        # Use resolved text as cache key, scoped by memory context
+        fingerprint = memory_fingerprint()
+        text = resolved_text + (f" [{fingerprint}]" if fingerprint else "")
         embedder = get_embedder()
         qdrant = get_qdrant()
         vector = embedder.encode(text).tolist()
