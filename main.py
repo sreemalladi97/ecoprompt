@@ -13,6 +13,8 @@ from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 from utils.logger import log_request
+from dotenv import load_dotenv
+load_dotenv()
 
 DASHBOARD_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
 TESTER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tester.html")
@@ -146,6 +148,21 @@ async def chat_completions(request: Request):
     model = body.get("model", "unknown")
     messages = body.get("messages", [])
     auth_header = request.headers.get("authorization", "")
+
+    # MEMORY: Check for remember command
+    try:
+        from core.memory import handle_memory_command, memory_inject
+        was_command, confirmation = handle_memory_command(messages)
+        if was_command:
+            return JSONResponse(content={
+                "choices": [{"message": {"role": "assistant", "content": confirmation}}]
+            })
+        # Inject memory context into messages before cache/AI
+        messages = memory_inject(messages)
+        body["messages"] = messages
+    except Exception as e:
+        logger.warning(f"[{request_id}] Memory skipped: {e}")
+
     logger.info(f"[{request_id}] Incoming | model={model} | messages={len(messages)}")
 
     upstream_url, api_key, clean_model = detect_provider(model, auth_header)

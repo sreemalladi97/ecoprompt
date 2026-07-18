@@ -4,3 +4,5 @@ __pycache__/
 *.db
 .DS_Store
 .env
+qdrant_storage/
+memory_store.json
