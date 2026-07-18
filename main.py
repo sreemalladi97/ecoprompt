@@ -45,6 +45,8 @@ app.add_middleware(
         "x-ecoprompt-route-reason",
         "x-ecoprompt-tokens-saved",
         "x-ecoprompt-compression-id",
+        "x-ecoprompt-output-shaped",
+        "x-ecoprompt-style",
     ],
 )
 
@@ -104,7 +106,10 @@ async def health():
     return {
         "status": "ok",
         "version": "0.5.0",
-        "features": ["token_compression", "semantic_cache", "routing_matrix", "reversible_compression"],
+        "features": [
+            "token_compression", "semantic_cache", "routing_matrix",
+            "reversible_compression", "output_shaping", "lazy_mode_style",
+        ],
         "routing_tiers": {
             "simple":  ["openai/gpt-oss-20b", "groq/compound-mini"],
             "medium":  ["qwen/qwen3.6-27b", "qwen/qwen3-32b"],
@@ -202,13 +207,30 @@ async def chat_completions(request: Request):
     except Exception as e:
         logger.warning(f"[{request_id}] Memory skipped: {e}")
 
+    # STYLE: Optional lazy/minimal-code system-prompt injection (ponytail-
+    # inspired, opt-in via x-ecoprompt-style: lazy). Applied before the
+    # cache lookup so a lazy-mode request never hits/pollutes the cache
+    # with an answer generated under a different style.
+    lazy_mode = False
+    try:
+        from core.style import is_lazy_mode, inject_lazy_mode
+        lazy_mode = is_lazy_mode(request.headers.get("x-ecoprompt-style", ""))
+        if lazy_mode:
+            messages = inject_lazy_mode(messages)
+            body["messages"] = messages
+    except Exception as e:
+        logger.warning(f"[{request_id}] Style injection skipped: {e}")
+
     logger.info(f"[{request_id}] Incoming | model={model} | messages={len(messages)}")
 
     upstream_url, api_key, clean_model = detect_provider(model, auth_header)
     body["model"] = clean_model
 
     # PHASE 3: Semantic cache
-    use_cache = request.headers.get("x-ecoprompt-cache", "true").lower() != "false"
+    use_cache = (
+        request.headers.get("x-ecoprompt-cache", "true").lower() != "false"
+        and not lazy_mode
+    )
     if use_cache:
         try:
             from core.cache import cache_lookup
@@ -281,6 +303,20 @@ async def chat_completions(request: Request):
             route_reason = f"routing failed, used requested model instead ({e})"
             logger.warning(f"[{request_id}] Routing skipped: {e}")
 
+    # PHASE 5: Output-token shaping — routine (simple-tier) requests only.
+    # Terser prompt + lower reasoning effort cuts what comes back, not just
+    # what gets sent.
+    output_shaped = False
+    shape_output = request.headers.get("x-ecoprompt-shape-output", "true").lower() != "false"
+    if shape_output:
+        try:
+            from core.output_shaper import is_shaped, inject_terse_note
+            if is_shaped(route_tier):
+                body["messages"] = inject_terse_note(body["messages"])
+                output_shaped = True
+        except Exception as e:
+            logger.warning(f"[{request_id}] Output shaping skipped: {e}")
+
     forward_headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
@@ -299,6 +335,12 @@ async def chat_completions(request: Request):
         for i, candidate_model in enumerate(candidates):
             body["model"] = candidate_model
             apply_reasoning_params(body, candidate_model)
+            if output_shaped:
+                try:
+                    from core.output_shaper import dial_reasoning_effort
+                    dial_reasoning_effort(body, candidate_model)
+                except Exception as e:
+                    logger.warning(f"[{request_id}] Reasoning-effort dial skipped: {e}")
             try:
                 upstream = await client.post(upstream_url, json=body, headers=forward_headers)
                 upstream.raise_for_status()
@@ -384,6 +426,9 @@ async def chat_completions(request: Request):
     response.headers["x-ecoprompt-tokens-saved"] = str(tokens_saved)
     if compression_id:
         response.headers["x-ecoprompt-compression-id"] = compression_id
+    response.headers["x-ecoprompt-output-shaped"] = "true" if output_shaped else "false"
+    if lazy_mode:
+        response.headers["x-ecoprompt-style"] = "lazy"
     return response
 
 
