@@ -33,6 +33,18 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    # allow_headers controls what the browser may SEND; it does nothing for
+    # what JS is allowed to READ back. Without expose_headers, browsers
+    # silently hide any response header outside a tiny default safelist,
+    # which is why the tester showed "unknown"/"none" for tier, model, and
+    # cache despite the response itself being correct.
+    expose_headers=[
+        "x-ecoprompt-cache",
+        "x-ecoprompt-routed-model",
+        "x-ecoprompt-route-tier",
+        "x-ecoprompt-route-reason",
+        "x-ecoprompt-tokens-saved",
+    ],
 )
 
 PROVIDERS = {
