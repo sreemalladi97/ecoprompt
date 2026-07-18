@@ -7,7 +7,7 @@
 ```
 Your App → EcoPrompt Proxy → AI Model (Groq, free tier)
                 ↓
-         [Token Compressor]   strip fluff before sending
+         [Token Compressor]   strip fluff before sending (originals recoverable via /v1/retrieve/{id})
          [Semantic Cache]     answer repeats for free (retrieve-and-rerank + cross-encoder validation)
          [Routing Matrix]     3-tier model routing, each tier with an automatic fallback model
 ```
@@ -32,6 +32,7 @@ New to the project? See **[GETTING_STARTED.md](./GETTING_STARTED.md)** for a ful
 - [x] **Step 5** — Dashboard UI
 - [x] **Step 6** — Request tester UI (`/test`) with routing transparency and markdown rendering
 - [x] **Step 7** — Live deployment on Vercel
+- [x] **Step 8** — Reversible compression (`/v1/retrieve/{id}`) so a compressed request's original text is recoverable within a TTL, and `/stats` now reads from the persisted SQLite log so it survives restarts
 
 ## Quick Start
 
@@ -60,10 +61,15 @@ Each caller supplies their own Groq API key in the request's `Authorization` hea
 | Endpoint | Description |
 |---|---|
 | `GET /health` | Liveness check + current routing tier config |
-| `GET /stats` | Token usage, cache hits, routing breakdown, fallback usage |
+| `GET /stats` | Token usage, cache hits, routing breakdown, fallback usage (persisted across restarts) |
 | `GET /dashboard` | Live dashboard UI |
 | `GET /test` | Browser-based request tester |
 | `POST /v1/chat/completions` | Drop-in OpenAI-compatible proxy |
+| `GET /v1/retrieve/{compression_id}` | Recover the pre-compression original for a request, within the TTL |
+
+## Reversible compression
+
+Compression is lossy, so whenever it actually saves tokens, the pre-compression messages are kept for a short TTL (default 1 hour, configurable via `ECOPROMPT_CCR_TTL_SECONDS`) under the request's id. The response header `x-ecoprompt-compression-id` (present whenever compression ran and helped) is the key to pass to `GET /v1/retrieve/{compression_id}` to get the original messages back. Entries expire and are purged automatically after the TTL. Ported from [headroom](https://github.com/chopratejas/headroom)'s "Cache & Context Retrieval" concept, scaled down to ecoprompt's single-table SQLite footprint.
 
 ## Routing
 

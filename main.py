@@ -44,6 +44,7 @@ app.add_middleware(
         "x-ecoprompt-route-tier",
         "x-ecoprompt-route-reason",
         "x-ecoprompt-tokens-saved",
+        "x-ecoprompt-compression-id",
     ],
 )
 
@@ -103,7 +104,7 @@ async def health():
     return {
         "status": "ok",
         "version": "0.5.0",
-        "features": ["token_compression", "semantic_cache", "routing_matrix"],
+        "features": ["token_compression", "semantic_cache", "routing_matrix", "reversible_compression"],
         "routing_tiers": {
             "simple":  ["openai/gpt-oss-20b", "groq/compound-mini"],
             "medium":  ["qwen/qwen3.6-27b", "qwen/qwen3-32b"],
@@ -128,6 +129,16 @@ async def tester():
 
 @app.get("/stats")
 async def stats():
+    # Prefer the persisted SQLite log so stats survive restarts and
+    # serverless cold starts. Vercel's filesystem is read-only at runtime,
+    # so this falls back to the in-memory counters there — same
+    # graceful-degradation pattern as the cache/compressor/memory subsystems.
+    try:
+        from utils.logger import get_summary
+        return get_summary()
+    except Exception as e:
+        logger.warning(f"Persisted stats unavailable, using in-memory counters: {e}")
+
     total = app.state.request_count
     hits = app.state.cache_hits
     hit_rate = round((hits / total * 100), 1) if total > 0 else 0.0
@@ -145,6 +156,22 @@ async def stats():
         "fallback_model_used":     app.state.fallback_used,
         "estimated_savings_usd": round(app.state.estimated_savings, 4),
     }
+
+
+@app.get("/v1/retrieve/{compression_id}")
+async def retrieve_original(compression_id: str):
+    """
+    Reversible-compression lookup (headroom's CCR pattern, ported to
+    ecoprompt's scale): compression is lossy, so the pre-compression
+    messages for a given request are kept around for a short TTL. Pass the
+    request's x-ecoprompt-compression-id header (present whenever
+    compression actually ran and saved tokens) to pull the original back.
+    """
+    from core.reversible import retrieve_original as lookup
+    result = lookup(compression_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Not found or expired")
+    return result
 
 
 @app.post("/v1/chat/completions")
@@ -209,6 +236,7 @@ async def chat_completions(request: Request):
 
     # PHASE 2: Token compression
     compression_stats = {"tokens_saved": 0, "compression_ratio": 1.0}
+    compression_id = None
     compress = request.headers.get("x-ecoprompt-compress", "true").lower() != "false"
     if compress:
         try:
@@ -216,6 +244,17 @@ async def chat_completions(request: Request):
             compressed_messages, compression_stats = compress_messages(messages)
             body["messages"] = compressed_messages
             logger.info(f"[{request_id}] Compressed | saved={compression_stats['tokens_saved']} tokens")
+
+            # Compression is lossy — keep the pre-compression messages
+            # retrievable for a short TTL (headroom's CCR pattern) so a
+            # caller can pull the original back via /v1/retrieve/{id}.
+            if compression_stats.get("tokens_saved", 0) > 0:
+                try:
+                    from core.reversible import store_original
+                    store_original(request_id, messages)
+                    compression_id = request_id
+                except Exception as ccr_err:
+                    logger.warning(f"[{request_id}] Reversible-compression store skipped: {ccr_err}")
         except Exception as e:
             logger.warning(f"[{request_id}] Compression skipped: {e}")
 
@@ -255,6 +294,7 @@ async def chat_completions(request: Request):
     # run scripts/check_models.py periodically to catch that ahead of time).
     upstream = None
     last_error = None
+    fallback_used_this_request = False
     async with httpx.AsyncClient(timeout=60.0) as client:
         for i, candidate_model in enumerate(candidates):
             body["model"] = candidate_model
@@ -265,6 +305,7 @@ async def chat_completions(request: Request):
                 routed_model = candidate_model
                 if i > 0:
                     app.state.fallback_used += 1
+                    fallback_used_this_request = True
                     logger.warning(f"[{request_id}] Used fallback model {candidate_model} (primary {candidates[0]} failed)")
                 break
             except httpx.HTTPStatusError as e:
@@ -322,7 +363,8 @@ async def chat_completions(request: Request):
 
     try:
         log_request(request_id=request_id, model=routed_model, tokens_in=tokens_in,
-                    tokens_out=tokens_out, latency_ms=latency_ms, cache_hit=False, source="upstream")
+                    tokens_out=tokens_out, latency_ms=latency_ms, cache_hit=False, source="upstream",
+                    tokens_saved=tokens_saved, route_tier=route_tier, fallback_used=fallback_used_this_request)
     except Exception as log_err:
         # Same reasoning as the cache-hit path above: a logging failure
         # (e.g. read-only filesystem on Vercel) must not turn an
@@ -340,6 +382,8 @@ async def chat_completions(request: Request):
     response.headers["x-ecoprompt-route-tier"] = route_tier
     response.headers["x-ecoprompt-route-reason"] = route_reason
     response.headers["x-ecoprompt-tokens-saved"] = str(tokens_saved)
+    if compression_id:
+        response.headers["x-ecoprompt-compression-id"] = compression_id
     return response
 
 
