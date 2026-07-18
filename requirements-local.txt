@@ -1,0 +1,12 @@
+# Extra dependencies needed for local development only.
+# Powers core/cache.py (semantic cache) and core/compressor.py (prompt
+# compression). NOT installed on the Vercel deployment on purpose, these
+# packages are too large/slow for serverless cold starts, so caching and
+# compression are intentionally inactive there (routing still works fine).
+#
+# Install alongside the base requirements:
+#   pip install -r requirements.txt -r requirements-local.txt
+
+sentence-transformers>=5.1.2
+qdrant-client>=1.16.1
+llmlingua>=0.2.2

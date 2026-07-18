@@ -2,4 +2,8 @@ fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
 httpx>=0.27.0
 python-dotenv>=1.0.0
-litellm>=1.40.0
+
+# Heavier ML dependencies (sentence-transformers, qdrant-client, llmlingua)
+# live in requirements-local.txt instead of here, deliberately. This file
+# is what Vercel installs on deploy, and those packages are too large/slow
+# for a serverless cold start. See requirements-local.txt for local dev.
