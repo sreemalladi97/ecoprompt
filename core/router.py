@@ -3,15 +3,32 @@ EcoPrompt - core/router.py
 3-tier routing matrix for Groq models (all free tier)
 """
 
+# Lets `str | None` / `tuple[str, str]` type hints below work on Python 3.9
+# (this project's venv), which doesn't support `|` union syntax natively.
+from __future__ import annotations
+
 import logging
 
 logger = logging.getLogger("ecoprompt")
 
 # ── Model tiers ───────────────────────────────────────────────────────────────
+# Each tier is an ordered list: [primary, fallback, ...]. The primary is tried
+# first; fallbacks only kick in if the primary errors out (e.g. rate-limited
+# or decommissioned by Groq — this already happened once, see check_models.py).
+# All models below are free-tier on Groq's developer plan as of Jul 2026.
 TIER_MODELS = {
-    "simple":  "openai/gpt-oss-20b",    # fast, cheap — replaces llama-3.1-8b-instant
-    "medium":  "qwen/qwen3.6-27b",      # balanced reasoning
-    "complex": "openai/gpt-oss-120b",   # heavy lifting (code, math, long context)
+    "simple": [
+        "openai/gpt-oss-20b",   # fast, cheap — replaces llama-3.1-8b-instant
+        "groq/compound-mini",   # fallback: lightweight general-purpose system
+    ],
+    "medium": [
+        "qwen/qwen3.6-27b",             # balanced reasoning
+        "qwen/qwen3-32b",               # fallback: same family, slightly larger
+    ],
+    "complex": [
+        "openai/gpt-oss-120b",          # heavy lifting (code, math, long context)
+        "meta-llama/llama-4-scout-17b-16e-instruct",  # fallback: different family
+    ],
 }
 
 # ── Keyword signals ───────────────────────────────────────────────────────────
@@ -30,10 +47,18 @@ MEDIUM_SIGNALS = [
 ]
 
 # ── Classifier ────────────────────────────────────────────────────────────────
-def classify(messages: list) -> str:
+def _first_match(signals: list, haystack: str) -> str | None:
+    """Returns the first signal string found in haystack, or None."""
+    return next((sig for sig in signals if sig in haystack), None)
+
+
+def classify_with_reason(messages: list) -> tuple[str, str]:
     """
-    Returns 'simple', 'medium', or 'complex' based on prompt content and length.
-    Checks the last user message (most relevant signal).
+    Returns (tier, reason). Tier is 'simple', 'medium', or 'complex'.
+    Reason is a short human-readable explanation of which signal decided
+    it — surfaced in the tester UI so a mis-route is visible and
+    debuggable instead of a black box. Checks the last user message
+    (most relevant signal).
     """
     user_text = ""
     for m in reversed(messages):
@@ -46,32 +71,59 @@ def classify(messages: list) -> str:
 
     # Length alone can force a tier upgrade
     if word_count > 300:
-        return "complex"
+        return "complex", f"length > 300 words ({word_count})"
+
     if word_count > 80:
         # Still check signals before committing to medium
-        if any(sig in user_text for sig in COMPLEX_SIGNALS):
-            return "complex"
-        return "medium"
+        matched = _first_match(COMPLEX_SIGNALS, user_text)
+        if matched:
+            return "complex", f"length > 80 words ({word_count}) + complex keyword '{matched.strip()}'"
+        return "medium", f"length > 80 words ({word_count}), no complex keyword"
 
     # Short prompts: check signals
-    if any(sig in user_text for sig in COMPLEX_SIGNALS):
-        return "complex"
-    if any(sig in lower for sig in MEDIUM_SIGNALS):
-        return "medium"
+    matched = _first_match(COMPLEX_SIGNALS, user_text)
+    if matched:
+        return "complex", f"complex keyword '{matched.strip()}'"
 
-    return "simple"
+    matched = _first_match(MEDIUM_SIGNALS, lower)
+    if matched:
+        return "medium", f"medium keyword '{matched.strip()}'"
+
+    return "simple", "no signals matched (default tier)"
+
+
+def classify(messages: list) -> str:
+    """
+    Returns just the tier ('simple', 'medium', or 'complex').
+    Kept for backward compatibility — use classify_with_reason() if you
+    also want to know which signal decided it.
+    """
+    tier, _ = classify_with_reason(messages)
+    return tier
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
+def get_candidates(tier: str, requested_model: str) -> list:
+    """
+    Returns the ordered list of models to try for a given tier.
+    First entry is the primary; the rest are automatic fallbacks used only
+    if the primary request fails.
+    """
+    return list(TIER_MODELS.get(tier, [requested_model]))
+
+
 def route(messages: list, requested_model: str) -> str:
     """
-    Returns the model name to actually send to Groq.
+    Returns the primary model name to try first.
+    Kept for backward compatibility — callers that need the full fallback
+    chain should use get_candidates() instead.
     Falls back to the requested model if classification fails.
     """
     try:
         tier = classify(messages)
-        chosen = TIER_MODELS[tier]
-        logger.info(f"Router: {requested_model} → {chosen} (tier={tier})")
+        candidates = get_candidates(tier, requested_model)
+        chosen = candidates[0]
+        logger.info(f"Router: {requested_model} → {chosen} (tier={tier}, {len(candidates)} candidate(s))")
         return chosen
     except Exception as e:
         logger.warning(f"Router fallback to requested model: {e}")

@@ -4,14 +4,18 @@ Step 4: Routing Matrix + multi-provider support
 """
 
 import os
+import re
 import time
 import uuid
 import logging
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 from utils.logger import log_request
+
+DASHBOARD_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
+TESTER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tester.html")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ecoprompt")
@@ -43,6 +47,43 @@ def detect_provider(model: str, auth_header: str):
     return PROVIDERS["openai"], api_key, model
 
 
+def apply_reasoning_params(body: dict, model: str) -> dict:
+    """
+    Several of our routed models (qwen/qwen3*, openai/gpt-oss-*) are
+    "reasoning" models that emit their step-by-step thinking by default —
+    Qwen inline as <think>...</think> in the answer text, GPT-OSS in a
+    separate `reasoning` field. Neither is useful to whatever app is
+    calling this proxy, and generating it burns extra tokens/latency for
+    nothing. Ask the model to skip it, per-family since the parameter
+    name differs and the two are mutually exclusive on Groq's API.
+    """
+    if model.startswith("qwen/"):
+        body["reasoning_format"] = "hidden"
+    elif model.startswith("openai/gpt-oss"):
+        body["include_reasoning"] = False
+    return body
+
+
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def strip_reasoning(content: str) -> str:
+    """
+    Defensive cleanup in case a <think> block slips through anyway
+    (e.g. a model/provider that doesn't honor apply_reasoning_params, or
+    a future model we haven't special-cased yet). Removes complete
+    <think>...</think> blocks, and if one never closed — e.g. the
+    response got cut off by max_completion_tokens mid-thought — drops
+    everything from that point on rather than showing a dangling tag.
+    """
+    if not content:
+        return content
+    cleaned = _THINK_BLOCK_RE.sub("", content)
+    if "<think>" in cleaned:
+        cleaned = cleaned.split("<think>")[0]
+    return cleaned.strip()
+
+
 @app.get("/health")
 async def health():
     return {
@@ -50,11 +91,25 @@ async def health():
         "version": "0.5.0",
         "features": ["token_compression", "semantic_cache", "routing_matrix"],
         "routing_tiers": {
-            "simple":  "openai/gpt-oss-20b",
-            "medium":  "qwen/qwen3.6-27b",
-            "complex": "openai/gpt-oss-120b",
+            "simple":  ["openai/gpt-oss-20b", "groq/compound-mini"],
+            "medium":  ["qwen/qwen3.6-27b", "qwen/qwen3-32b"],
+            "complex": ["openai/gpt-oss-120b", "meta-llama/llama-4-scout-17b-16e-instruct"],
         },
     }
+
+
+@app.get("/dashboard")
+async def dashboard():
+    if not os.path.exists(DASHBOARD_PATH):
+        raise HTTPException(status_code=404, detail="dashboard.html not found")
+    return FileResponse(DASHBOARD_PATH, media_type="text/html")
+
+
+@app.get("/test")
+async def tester():
+    if not os.path.exists(TESTER_PATH):
+        raise HTTPException(status_code=404, detail="tester.html not found")
+    return FileResponse(TESTER_PATH, media_type="text/html")
 
 
 @app.get("/stats")
@@ -73,6 +128,7 @@ async def stats():
         "routes_to_cheap_model":    app.state.simple_routes,
         "routes_to_medium_model":   app.state.medium_routes,
         "routes_to_powerful_model": app.state.complex_routes,
+        "fallback_model_used":     app.state.fallback_used,
         "estimated_savings_usd": round(app.state.estimated_savings, 4),
     }
 
@@ -129,13 +185,14 @@ async def chat_completions(request: Request):
     # PHASE 4: 3-tier Routing
     routed_model = clean_model
     route_tier = "none"
+    route_reason = "routing disabled (x-ecoprompt-route: false)"
+    candidates = [clean_model]
     use_router = request.headers.get("x-ecoprompt-route", "true").lower() != "false"
     if use_router:
         try:
-            from core.router import route, classify
-            route_tier = classify(messages)
-            routed_model = route(messages, clean_model)
-            body["model"] = routed_model
+            from core.router import get_candidates, classify_with_reason
+            route_tier, route_reason = classify_with_reason(messages)
+            candidates = get_candidates(route_tier, clean_model)
 
             if route_tier == "simple":
                 app.state.simple_routes += 1
@@ -145,6 +202,7 @@ async def chat_completions(request: Request):
                 app.state.complex_routes += 1
 
         except Exception as e:
+            route_reason = f"routing failed, used requested model instead ({e})"
             logger.warning(f"[{request_id}] Routing skipped: {e}")
 
     forward_headers = {
@@ -152,21 +210,60 @@ async def chat_completions(request: Request):
         "Authorization": f"Bearer {api_key}",
     }
 
-    logger.info(f"[{request_id}] Sending to {upstream_url} | model={body['model']} | tier={route_tier}")
+    logger.info(f"[{request_id}] Sending to {upstream_url} | candidates={candidates} | tier={route_tier} ({route_reason})")
 
+    # Try each candidate model in order. Only the primary is tried under
+    # normal conditions; later candidates are used if the primary fails
+    # (e.g. rate-limited, or removed by the provider without our knowledge —
+    # run scripts/check_models.py periodically to catch that ahead of time).
+    upstream = None
+    last_error = None
     async with httpx.AsyncClient(timeout=60.0) as client:
-        try:
-            upstream = await client.post(upstream_url, json=body, headers=forward_headers)
-            upstream.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            logger.error(f"[{request_id}] Upstream error: {e.response.status_code} {e.response.text}")
-            return JSONResponse(status_code=e.response.status_code, content=e.response.json())
-        except httpx.RequestError as e:
-            logger.error(f"[{request_id}] Connection error: {e}")
-            raise HTTPException(status_code=502, detail="Upstream connection failed")
+        for i, candidate_model in enumerate(candidates):
+            body["model"] = candidate_model
+            apply_reasoning_params(body, candidate_model)
+            try:
+                upstream = await client.post(upstream_url, json=body, headers=forward_headers)
+                upstream.raise_for_status()
+                routed_model = candidate_model
+                if i > 0:
+                    app.state.fallback_used += 1
+                    logger.warning(f"[{request_id}] Used fallback model {candidate_model} (primary {candidates[0]} failed)")
+                break
+            except httpx.HTTPStatusError as e:
+                last_error = e
+                logger.warning(f"[{request_id}] {candidate_model} failed ({e.response.status_code})"
+                                + (" — trying next fallback" if i < len(candidates) - 1 else " — no fallbacks left"))
+                upstream = None
+                continue
+            except httpx.RequestError as e:
+                last_error = e
+                logger.error(f"[{request_id}] Connection error on {candidate_model}: {e}")
+                upstream = None
+                continue
+
+        if upstream is None:
+            if isinstance(last_error, httpx.HTTPStatusError):
+                logger.error(f"[{request_id}] All candidates failed: {last_error.response.status_code} {last_error.response.text}")
+                return JSONResponse(status_code=last_error.response.status_code, content=last_error.response.json())
+            logger.error(f"[{request_id}] All candidates failed: {last_error}")
+            raise HTTPException(status_code=502, detail="Upstream connection failed for all candidate models")
 
     response_data = upstream.json()
     latency_ms = round((time.time() - start) * 1000)
+
+    # Belt-and-suspenders: strip any leftover <think> reasoning that made
+    # it into the answer text despite apply_reasoning_params() above.
+    try:
+        choice = response_data.get("choices", [{}])[0]
+        msg = choice.get("message", {})
+        if msg.get("content"):
+            original = msg["content"]
+            msg["content"] = strip_reasoning(original)
+            if msg["content"] != original.strip():
+                logger.info(f"[{request_id}] Stripped inline reasoning from response")
+    except (KeyError, IndexError, TypeError) as e:
+        logger.warning(f"[{request_id}] Reasoning strip skipped: {e}")
 
     usage = response_data.get("usage", {})
     tokens_in = usage.get("prompt_tokens", 0)
@@ -198,6 +295,7 @@ async def chat_completions(request: Request):
     response.headers["x-ecoprompt-cache"] = "miss"
     response.headers["x-ecoprompt-routed-model"] = routed_model
     response.headers["x-ecoprompt-route-tier"] = route_tier
+    response.headers["x-ecoprompt-route-reason"] = route_reason
     response.headers["x-ecoprompt-tokens-saved"] = str(tokens_saved)
     return response
 
@@ -212,5 +310,6 @@ async def startup():
     app.state.simple_routes = 0
     app.state.medium_routes = 0
     app.state.complex_routes = 0
+    app.state.fallback_used = 0
     app.state.estimated_savings = 0.0
-    logger.info("EcoPrompt v0.5.0 started - 3-tier routing (simple/medium/complex)")
+    logger.info("EcoPrompt v0.5.0 started - 3-tier routing (simple/medium/complex) with per-tier fallbacks")

@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EcoPrompt Tester</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Inter:wght@400;500;600&display=swap');
+
+  :root {
+    --bg: #0a0f0a;
+    --surface: #111811;
+    --border: #1e2a1e;
+    --green: #00ff87;
+    --green-dim: #00c86a;
+    --green-muted: rgba(0,255,135,0.08);
+    --text: #e8f5e8;
+    --text-dim: #7a9a7a;
+    --red: #ff4d4d;
+    --red-muted: rgba(255,77,77,0.1);
+    --amber: #ffb800;
+    --amber-muted: rgba(255,184,0,0.1);
+    --blue: #4a9eff;
+    --blue-muted: rgba(74,158,255,0.1);
+    --white: #ffffff;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    min-height: 100vh;
+    padding: 32px 24px;
+  }
+
+  .wrap { max-width: 880px; margin: 0 auto; }
+
+  header {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 20px;
+  }
+
+  .logo {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--green);
+    letter-spacing: -0.5px;
+  }
+
+  .subtitle {
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  nav {
+    margin: 16px 0 28px;
+    font-size: 12px;
+  }
+  nav a {
+    color: var(--text-dim);
+    text-decoration: none;
+    border: 1px solid var(--border);
+    padding: 4px 10px;
+    border-radius: 4px;
+  }
+  nav a:hover { color: var(--green); border-color: var(--green-dim); }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+
+  .card h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    margin-bottom: 14px;
+    font-weight: 600;
+  }
+
+  label {
+    display: block;
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+  }
+
+  input[type="password"], input[type="text"], textarea {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    padding: 10px 12px;
+    resize: vertical;
+  }
+
+  textarea { min-height: 110px; line-height: 1.5; }
+
+  .row { display: flex; gap: 12px; margin-bottom: 14px; }
+  .row > div { flex: 1; }
+
+  .examples { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0 4px; }
+
+  .example-btn {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    padding: 6px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .example-btn:hover { border-color: var(--green-dim); color: var(--green); }
+  .example-btn[data-tier="simple"]:hover { border-color: var(--green-dim); color: var(--green); }
+  .example-btn[data-tier="medium"]:hover { border-color: var(--amber); color: var(--amber); }
+  .example-btn[data-tier="complex"]:hover { border-color: var(--blue); color: var(--blue); }
+
+  .actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 16px;
+  }
+
+  .toggles { display: flex; gap: 16px; font-size: 12px; color: var(--text-dim); }
+  .toggles label { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--text-dim); }
+  .toggles input[type="checkbox"] { width: auto; }
+
+  button.send {
+    background: var(--green);
+    color: #06120a;
+    border: none;
+    border-radius: 6px;
+    padding: 10px 22px;
+    font-weight: 600;
+    font-size: 13px;
+    cursor: pointer;
+    font-family: 'Inter', sans-serif;
+  }
+  button.send:hover { background: var(--green-dim); }
+  button.send:disabled { background: var(--border); color: var(--text-dim); cursor: not-allowed; }
+
+  .badge {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    display: inline-block;
+    font-weight: 600;
+  }
+  .badge.simple  { background: var(--green-muted); color: var(--green); }
+  .badge.medium  { background: var(--amber-muted); color: var(--amber); }
+  .badge.complex { background: var(--blue-muted);  color: var(--blue); }
+  .badge.none    { background: var(--border); color: var(--text-dim); }
+  .badge.fallback { background: var(--red-muted); color: var(--red); }
+  .badge.hit { background: var(--green-muted); color: var(--green); }
+  .badge.miss { background: var(--border); color: var(--text-dim); }
+
+  .meta-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 14px;
+    margin-bottom: 16px;
+  }
+
+  .meta-item .k {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+  }
+  .meta-item .v {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 15px;
+    color: var(--text);
+  }
+
+  .meta-item .reason {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 5px;
+  }
+
+  .response-box {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 16px;
+    font-size: 13.5px;
+    line-height: 1.6;
+    max-height: 400px;
+    overflow-y: auto;
+  }
+
+  .response-box h3, .response-box h4 {
+    font-family: 'IBM Plex Mono', monospace;
+    color: var(--green);
+    font-size: 13.5px;
+    margin: 16px 0 8px;
+  }
+  .response-box h3:first-child, .response-box h4:first-child { margin-top: 0; }
+
+  .response-box p { margin: 0 0 10px; }
+  .response-box p:last-child { margin-bottom: 0; }
+
+  .response-box ul, .response-box ol {
+    margin: 0 0 12px 20px;
+    padding: 0;
+  }
+  .response-box li { margin-bottom: 4px; }
+  .response-box li:last-child { margin-bottom: 0; }
+
+  .response-box hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 16px 0;
+  }
+
+  .response-box code {
+    background: var(--green-muted);
+    color: var(--green);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  .response-box strong { color: var(--white); font-weight: 600; }
+
+  .error-box {
+    background: var(--red-muted);
+    border: 1px solid var(--red);
+    color: var(--red);
+    border-radius: 6px;
+    padding: 14px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12.5px;
+    white-space: pre-wrap;
+  }
+
+  .empty-state {
+    color: var(--text-dim);
+    font-size: 13px;
+    text-align: center;
+    padding: 24px 0;
+  }
+
+  .error-headline {
+    font-size: 13.5px;
+    line-height: 1.5;
+    margin-bottom: 10px;
+  }
+
+  .error-details { font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; }
+  .error-details summary {
+    cursor: pointer;
+    color: var(--red);
+    opacity: 0.75;
+    margin-bottom: 8px;
+  }
+  .error-details summary:hover { opacity: 1; }
+  .error-details pre { white-space: pre-wrap; word-break: break-word; opacity: 0.9; }
+
+  .cache-hit-banner {
+    background: var(--green-muted);
+    border: 1px solid var(--green-dim);
+    color: var(--green);
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-size: 13px;
+    margin-bottom: 16px;
+  }
+
+  .spinner {
+    display: inline-block;
+    width: 12px; height: 12px;
+    border: 2px solid var(--border);
+    border-top-color: var(--green);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    margin-right: 8px;
+    vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <span class="logo">EcoPrompt</span>
+    <span class="subtitle">Request Tester</span>
+  </header>
+
+  <nav>
+    <a href="/dashboard">← Back to Dashboard</a>
+  </nav>
+
+  <div class="card">
+    <h2>Connection</h2>
+    <div class="row">
+      <div>
+        <label for="proxyUrl">Proxy URL</label>
+        <input type="text" id="proxyUrl" value="http://localhost:8000">
+      </div>
+      <div>
+        <label for="apiKey">Groq API Key</label>
+        <input type="password" id="apiKey" placeholder="gsk_...">
+      </div>
+    </div>
+    <div class="toggles">
+      <label><input type="checkbox" id="useCache" checked> cache</label>
+      <label><input type="checkbox" id="useCompress" checked> compress</label>
+      <label><input type="checkbox" id="useRoute" checked> route</label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Prompt</h2>
+    <textarea id="prompt" placeholder="Type a prompt, or click an example below...">What is the capital of France?</textarea>
+
+    <div class="examples">
+      <button class="example-btn" data-tier="simple"  data-text="What is the capital of France?">simple example</button>
+      <button class="example-btn" data-tier="medium"  data-text="Explain how photosynthesis works and why it matters for the food chain.">medium example</button>
+      <button class="example-btn" data-tier="complex" data-text="Write a Python function that implements binary search, then explain its time complexity step by step.">complex example</button>
+    </div>
+
+    <div class="actions">
+      <span id="statusLine" style="font-size:12px; color:var(--text-dim);"></span>
+      <button class="send" id="sendBtn">Send request</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Result</h2>
+    <div id="result">
+      <div class="empty-state">Send a prompt to see routing, tokens, and the model's response here.</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const examples = document.querySelectorAll('.example-btn');
+  examples.forEach(btn => {
+    btn.addEventListener('click', () => {
+      $('prompt').value = btn.dataset.text;
+    });
+  });
+
+  // Remember proxy URL + key locally so you don't retype them every time.
+  $('proxyUrl').value = localStorage.getItem('ecoprompt_proxy_url') || 'http://localhost:8000';
+  $('apiKey').value = localStorage.getItem('ecoprompt_api_key') || '';
+  $('proxyUrl').addEventListener('change', () => localStorage.setItem('ecoprompt_proxy_url', $('proxyUrl').value));
+  $('apiKey').addEventListener('change', () => localStorage.setItem('ecoprompt_api_key', $('apiKey').value));
+
+  function badge(text, cls) {
+    return `<span class="badge ${cls}">${text}</span>`;
+  }
+
+  function escapeHtml(str) {
+    return String(str).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  }
+
+  // Defensive cleanup, matches strip_reasoning() in main.py. The proxy
+  // should already strip this, but this keeps the tester clean even if
+  // you're pointed at an older/different proxy instance.
+  function stripReasoning(content) {
+    if (!content) return content;
+    let cleaned = content.replace(/<think>[\s\S]*?<\/think>/g, '');
+    const openIdx = cleaned.indexOf('<think>');
+    if (openIdx !== -1) cleaned = cleaned.slice(0, openIdx);
+    return cleaned.trim();
+  }
+
+  // Small dependency-free markdown renderer. Not full CommonMark, just
+  // enough for what these models actually produce: headers, bold, inline
+  // code, bullet/numbered lists, horizontal rules, paragraphs. Escapes
+  // the source first so nothing in the model's answer can inject HTML.
+  function renderMarkdown(text) {
+    if (!text) return '';
+    let src = escapeHtml(text);
+
+    src = src.replace(/^\s*---+\s*$/gm, '<hr>');
+    src = src.replace(/^#### (.*)$/gm, '<h4>$1</h4>');
+    src = src.replace(/^### (.*)$/gm, '<h4>$1</h4>');
+    src = src.replace(/^## (.*)$/gm, '<h3>$1</h3>');
+    src = src.replace(/^# (.*)$/gm, '<h3>$1</h3>');
+    src = src.replace(/`([^`]+)`/g, '<code>$1</code>');
+    src = src.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+    // Group consecutive bullet/numbered lines into real <ul>/<ol> blocks.
+    const lines = src.split('\n');
+    const out = [];
+    let listType = null;
+    const flushList = () => { if (listType) { out.push(`</${listType}>`); listType = null; } };
+
+    for (const line of lines) {
+      const ulMatch = line.match(/^\s*[-*]\s+(.*)$/);
+      const olMatch = line.match(/^\s*(\d+)\.\s+(.*)$/);
+      if (ulMatch) {
+        if (listType !== 'ul') { flushList(); out.push('<ul>'); listType = 'ul'; }
+        out.push(`<li>${ulMatch[1]}</li>`);
+      } else if (olMatch) {
+        if (listType !== 'ol') { flushList(); out.push(`<ol start="${olMatch[1]}">`); listType = 'ol'; }
+        out.push(`<li>${olMatch[2]}</li>`);
+      } else {
+        flushList();
+        out.push(line);
+      }
+    }
+    flushList();
+    src = out.join('\n');
+
+    // Wrap runs of plain-text lines in <p>, leaving already-block-level
+    // lines (headers, lists, hr) alone. A blank line also ends a paragraph.
+    // (Line-by-line, not chunk-by-chunk, so a block tag followed directly
+    // by an explanatory line — no blank line between them, common in these
+    // models' output — still gets its own <p> instead of being left raw.)
+    const blockTagRe = /^<(h[1-6]|ul|ol|li|\/ul|\/ol|hr)/;
+    const out2 = [];
+    let para = [];
+    const flushPara = () => {
+      if (para.length) { out2.push(`<p>${para.join(' ')}</p>`); para = []; }
+    };
+    for (const line of src.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) { flushPara(); continue; }
+      if (blockTagRe.test(trimmed)) { flushPara(); out2.push(trimmed); continue; }
+      para.push(trimmed);
+    }
+    flushPara();
+    return out2.join('\n');
+  }
+
+  // Turns an HTTP status + Groq's error body into a plain-language sentence.
+  // The raw JSON is still available for debugging behind "Show technical details".
+  function friendlyError(status, data) {
+    const msg = data?.error?.message || '';
+    if (status === 401) {
+      return "Your API key looks invalid or missing. Double-check it was copied correctly from console.groq.com/keys.";
+    }
+    if (status === 404) {
+      return "The model name wasn't recognized by Groq. This usually means a model in core/router.py was renamed or removed — run scripts/check_models.py to check.";
+    }
+    if (status === 429) {
+      return "You've hit Groq's free-tier rate limit." + (msg ? ` ${msg}` : ' Wait a few seconds and try again.');
+    }
+    if (status === 400) {
+      return "The request was malformed." + (msg ? ` ${msg}` : '');
+    }
+    if (status >= 500) {
+      return "Something went wrong on Groq's side, not yours. Try again in a moment.";
+    }
+    return msg || `Request failed with HTTP ${status}.`;
+  }
+
+  async function send() {
+    const proxyUrl = $('proxyUrl').value.replace(/\/$/, '');
+    const apiKey = $('apiKey').value.trim();
+    const prompt = $('prompt').value.trim();
+    const resultEl = $('result');
+    const sendBtn = $('sendBtn');
+    const statusLine = $('statusLine');
+
+    if (!prompt) { statusLine.textContent = 'Enter a prompt first.'; return; }
+    if (!apiKey) { statusLine.textContent = 'Enter your Groq API key first.'; return; }
+
+    sendBtn.disabled = true;
+    statusLine.innerHTML = '<span class="spinner"></span>sending...';
+    resultEl.innerHTML = '<div class="empty-state">Waiting for response...</div>';
+
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+      'x-ecoprompt-cache': $('useCache').checked ? 'true' : 'false',
+      'x-ecoprompt-compress': $('useCompress').checked ? 'true' : 'false',
+      'x-ecoprompt-route': $('useRoute').checked ? 'true' : 'false',
+    };
+
+    const started = performance.now();
+    try {
+      const res = await fetch(`${proxyUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: 'groq/llama-3.1-8b-instant',
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      });
+      const roundtripMs = Math.round(performance.now() - started);
+      const data = await res.json();
+
+      if (!res.ok) {
+        const headline = friendlyError(res.status, data);
+        resultEl.innerHTML = `
+          <div class="error-box">
+            <div class="error-headline">⚠ ${escapeHtml(headline)}</div>
+            <details class="error-details">
+              <summary>Show technical details</summary>
+              <pre>HTTP ${res.status}\n${escapeHtml(JSON.stringify(data, null, 2))}</pre>
+            </details>
+          </div>`;
+        statusLine.textContent = `Failed after ${roundtripMs}ms`;
+        return;
+      }
+
+      const tier = res.headers.get('x-ecoprompt-route-tier') || 'none';
+      const routeReason = res.headers.get('x-ecoprompt-route-reason') || '';
+      const routedModel = res.headers.get('x-ecoprompt-routed-model') || 'unknown';
+      const cacheStatus = res.headers.get('x-ecoprompt-cache') || 'unknown';
+      const tokensSaved = res.headers.get('x-ecoprompt-tokens-saved') || '0';
+      const usage = data.usage || {};
+      const rawContent = data.choices?.[0]?.message?.content ?? '(no content returned)';
+      const content = stripReasoning(rawContent);
+      const responseBox = `<div class="response-box">${renderMarkdown(content)}</div>`;
+
+      // Cache hits skip routing entirely (no model is called), so tier/model
+      // headers are absent by design. Show that clearly instead of the
+      // confusing "Tier: none / Model: unknown" that shows if we just
+      // reused the normal layout below.
+      if (cacheStatus === 'hit') {
+        resultEl.innerHTML = `
+          <div class="cache-hit-banner">⚡ Served from cache — no model was called for this request, so it was instant and free.</div>
+          <div class="meta-grid">
+            <div class="meta-item">
+              <div class="k">Cache</div>
+              <div class="v">${badge('hit', 'hit')}</div>
+            </div>
+            <div class="meta-item">
+              <div class="k">Round trip</div>
+              <div class="v">${roundtripMs}ms</div>
+            </div>
+            <div class="meta-item">
+              <div class="k">Tokens in / out (original call)</div>
+              <div class="v">${usage.prompt_tokens ?? '–'} / ${usage.completion_tokens ?? '–'}</div>
+            </div>
+          </div>
+          ${responseBox}
+        `;
+        statusLine.textContent = `Done in ${roundtripMs}ms (from cache)`;
+        return;
+      }
+
+      resultEl.innerHTML = `
+        <div class="meta-grid">
+          <div class="meta-item" style="grid-column: span 2;">
+            <div class="k">Tier (why)</div>
+            <div class="v">${badge(tier, tier)}</div>
+            ${routeReason ? `<div class="reason">${escapeHtml(routeReason)}</div>` : ''}
+          </div>
+          <div class="meta-item">
+            <div class="k">Model used</div>
+            <div class="v" style="font-size:12px;">${routedModel}</div>
+          </div>
+          <div class="meta-item">
+            <div class="k">Cache</div>
+            <div class="v">${badge(cacheStatus, 'miss')}</div>
+          </div>
+          <div class="meta-item">
+            <div class="k">Round trip</div>
+            <div class="v">${roundtripMs}ms</div>
+          </div>
+          <div class="meta-item">
+            <div class="k">Tokens in / out</div>
+            <div class="v">${usage.prompt_tokens ?? '–'} / ${usage.completion_tokens ?? '–'}</div>
+          </div>
+          <div class="meta-item">
+            <div class="k">Tokens saved</div>
+            <div class="v">${tokensSaved}</div>
+          </div>
+        </div>
+        ${responseBox}
+      `;
+      statusLine.textContent = `Done in ${roundtripMs}ms`;
+    } catch (err) {
+      resultEl.innerHTML = `<div class="error-box">Request failed: ${err.message}\n\nIs the proxy running? Check the Proxy URL above and that uvicorn is up.</div>`;
+      statusLine.textContent = 'Request failed';
+    } finally {
+      sendBtn.disabled = false;
+    }
+  }
+
+  $('sendBtn').addEventListener('click', send);
+  $('prompt').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send();
+  });
+</script>
+</body>
+</html>
