@@ -54,7 +54,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 # To:     http://localhost:8000/v1/chat/completions
 ```
 
-Each caller supplies their own Groq API key in the request's `Authorization` header, same as calling Groq directly, the proxy doesn't hold or require a server-side key to run.
+Each caller supplies their own Groq API key in the request's `Authorization` header, same as calling Groq directly, the proxy doesn't require a server-side key to run. Locally, if a request omits the header, the proxy falls back to `GROQ_API_KEY` from `.env` (handy so the [tester](#endpoints) doesn't need the key re-pasted every time) — this fallback is local-dev-only: the public Vercel deployment has no `.env`, so every caller there still brings their own key and nobody shares quota.
 
 ## Endpoints
 

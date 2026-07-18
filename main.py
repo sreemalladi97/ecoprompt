@@ -58,6 +58,12 @@ PROVIDERS = {
 
 def detect_provider(model: str, auth_header: str):
     api_key = auth_header.replace("Bearer ", "").strip() if auth_header else ""
+    if not api_key:
+        # Local-dev convenience only: fall back to a server-side key from
+        # .env when the caller doesn't supply one. Never required — the
+        # public/Vercel deployment has no .env, so every caller there must
+        # still bring their own key and nobody's quota is shared.
+        api_key = os.environ.get("GROQ_API_KEY", "")
     if model.startswith("groq/") or api_key.startswith("gsk_"):
         clean_model = model.replace("groq/", "")
         return PROVIDERS["groq"], api_key, clean_model
