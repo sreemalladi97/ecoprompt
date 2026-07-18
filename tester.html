@@ -319,11 +319,11 @@
     <div class="row">
       <div>
         <label for="proxyUrl">Proxy URL</label>
-        <input type="text" id="proxyUrl" value="http://localhost:8000">
+        <input type="text" id="proxyUrl" value="http://localhost:8001">
       </div>
       <div>
-        <label for="apiKey">Groq API Key</label>
-        <input type="password" id="apiKey" placeholder="gsk_...">
+        <label for="apiKey">Groq API Key <span style="font-weight:normal; color:var(--text-dim);">(optional locally — falls back to the server's .env)</span></label>
+        <input type="password" id="apiKey" placeholder="gsk_... (leave blank to use server .env)">
       </div>
     </div>
     <div class="toggles">
@@ -368,7 +368,7 @@
   });
 
   // Remember proxy URL + key locally so you don't retype them every time.
-  $('proxyUrl').value = localStorage.getItem('ecoprompt_proxy_url') || 'http://localhost:8000';
+  $('proxyUrl').value = localStorage.getItem('ecoprompt_proxy_url') || 'http://localhost:8001';
   $('apiKey').value = localStorage.getItem('ecoprompt_api_key') || '';
   $('proxyUrl').addEventListener('change', () => localStorage.setItem('ecoprompt_proxy_url', $('proxyUrl').value));
   $('apiKey').addEventListener('change', () => localStorage.setItem('ecoprompt_api_key', $('apiKey').value));
@@ -483,7 +483,6 @@
     const statusLine = $('statusLine');
 
     if (!prompt) { statusLine.textContent = 'Enter a prompt first.'; return; }
-    if (!apiKey) { statusLine.textContent = 'Enter your Groq API key first.'; return; }
 
     sendBtn.disabled = true;
     statusLine.innerHTML = '<span class="spinner"></span>sending...';
@@ -491,11 +490,16 @@
 
     const headers = {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
       'x-ecoprompt-cache': $('useCache').checked ? 'true' : 'false',
       'x-ecoprompt-compress': $('useCompress').checked ? 'true' : 'false',
       'x-ecoprompt-route': $('useRoute').checked ? 'true' : 'false',
     };
+    // Omit Authorization entirely when blank, rather than sending an empty
+    // bearer token, so the proxy's own .env fallback (local dev only) is
+    // what decides what happens next — not a header that merely looks empty.
+    if (apiKey) {
+      headers['Authorization'] = `Bearer ${apiKey}`;
+    }
 
     const started = performance.now();
     try {

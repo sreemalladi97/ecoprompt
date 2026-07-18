@@ -44,6 +44,10 @@ app.add_middleware(
         "x-ecoprompt-route-tier",
         "x-ecoprompt-route-reason",
         "x-ecoprompt-tokens-saved",
+        "x-ecoprompt-compression-id",
+        "x-ecoprompt-compression-skipped",
+        "x-ecoprompt-output-shaped",
+        "x-ecoprompt-style",
     ],
 )
 
@@ -55,6 +59,12 @@ PROVIDERS = {
 
 def detect_provider(model: str, auth_header: str):
     api_key = auth_header.replace("Bearer ", "").strip() if auth_header else ""
+    if not api_key:
+        # Local-dev convenience only: fall back to a server-side key from
+        # .env when the caller doesn't supply one. Never required — the
+        # public/Vercel deployment has no .env, so every caller there must
+        # still bring their own key and nobody's quota is shared.
+        api_key = os.environ.get("GROQ_API_KEY", "")
     if model.startswith("groq/") or api_key.startswith("gsk_"):
         clean_model = model.replace("groq/", "")
         return PROVIDERS["groq"], api_key, clean_model
@@ -103,7 +113,11 @@ async def health():
     return {
         "status": "ok",
         "version": "0.5.0",
-        "features": ["token_compression", "semantic_cache", "routing_matrix"],
+        "features": [
+            "token_compression", "semantic_cache", "routing_matrix",
+            "reversible_compression", "output_shaping", "lazy_mode_style",
+            "content_aware_compression",
+        ],
         "routing_tiers": {
             "simple":  ["openai/gpt-oss-20b", "groq/compound-mini"],
             "medium":  ["qwen/qwen3.6-27b", "qwen/qwen3-32b"],
@@ -128,6 +142,16 @@ async def tester():
 
 @app.get("/stats")
 async def stats():
+    # Prefer the persisted SQLite log so stats survive restarts and
+    # serverless cold starts. Vercel's filesystem is read-only at runtime,
+    # so this falls back to the in-memory counters there — same
+    # graceful-degradation pattern as the cache/compressor/memory subsystems.
+    try:
+        from utils.logger import get_summary
+        return get_summary()
+    except Exception as e:
+        logger.warning(f"Persisted stats unavailable, using in-memory counters: {e}")
+
     total = app.state.request_count
     hits = app.state.cache_hits
     hit_rate = round((hits / total * 100), 1) if total > 0 else 0.0
@@ -144,7 +168,24 @@ async def stats():
         "routes_to_powerful_model": app.state.complex_routes,
         "fallback_model_used":     app.state.fallback_used,
         "estimated_savings_usd": round(app.state.estimated_savings, 4),
+        "savings_excluded_unpriced_models": sorted(app.state.unpriced_models_seen),
     }
+
+
+@app.get("/v1/retrieve/{compression_id}")
+async def retrieve_original(compression_id: str):
+    """
+    Reversible-compression lookup (headroom's CCR pattern, ported to
+    ecoprompt's scale): compression is lossy, so the pre-compression
+    messages for a given request are kept around for a short TTL. Pass the
+    request's x-ecoprompt-compression-id header (present whenever
+    compression actually ran and saved tokens) to pull the original back.
+    """
+    from core.reversible import retrieve_original as lookup
+    result = lookup(compression_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Not found or expired")
+    return result
 
 
 @app.post("/v1/chat/completions")
@@ -175,13 +216,30 @@ async def chat_completions(request: Request):
     except Exception as e:
         logger.warning(f"[{request_id}] Memory skipped: {e}")
 
+    # STYLE: Optional lazy/minimal-code system-prompt injection (ponytail-
+    # inspired, opt-in via x-ecoprompt-style: lazy). Applied before the
+    # cache lookup so a lazy-mode request never hits/pollutes the cache
+    # with an answer generated under a different style.
+    lazy_mode = False
+    try:
+        from core.style import is_lazy_mode, inject_lazy_mode
+        lazy_mode = is_lazy_mode(request.headers.get("x-ecoprompt-style", ""))
+        if lazy_mode:
+            messages = inject_lazy_mode(messages)
+            body["messages"] = messages
+    except Exception as e:
+        logger.warning(f"[{request_id}] Style injection skipped: {e}")
+
     logger.info(f"[{request_id}] Incoming | model={model} | messages={len(messages)}")
 
     upstream_url, api_key, clean_model = detect_provider(model, auth_header)
     body["model"] = clean_model
 
     # PHASE 3: Semantic cache
-    use_cache = request.headers.get("x-ecoprompt-cache", "true").lower() != "false"
+    use_cache = (
+        request.headers.get("x-ecoprompt-cache", "true").lower() != "false"
+        and not lazy_mode
+    )
     if use_cache:
         try:
             from core.cache import cache_lookup
@@ -209,13 +267,27 @@ async def chat_completions(request: Request):
 
     # PHASE 2: Token compression
     compression_stats = {"tokens_saved": 0, "compression_ratio": 1.0}
+    compression_id = None
     compress = request.headers.get("x-ecoprompt-compress", "true").lower() != "false"
     if compress:
         try:
             from core.compressor import compress_messages
             compressed_messages, compression_stats = compress_messages(messages)
             body["messages"] = compressed_messages
-            logger.info(f"[{request_id}] Compressed | saved={compression_stats['tokens_saved']} tokens")
+            skipped = compression_stats.get("content_type_skipped") or {}
+            skip_note = f" | skipped (non-prose): {skipped}" if skipped else ""
+            logger.info(f"[{request_id}] Compressed | saved={compression_stats['tokens_saved']} tokens{skip_note}")
+
+            # Compression is lossy — keep the pre-compression messages
+            # retrievable for a short TTL (headroom's CCR pattern) so a
+            # caller can pull the original back via /v1/retrieve/{id}.
+            if compression_stats.get("tokens_saved", 0) > 0:
+                try:
+                    from core.reversible import store_original
+                    store_original(request_id, messages)
+                    compression_id = request_id
+                except Exception as ccr_err:
+                    logger.warning(f"[{request_id}] Reversible-compression store skipped: {ccr_err}")
         except Exception as e:
             logger.warning(f"[{request_id}] Compression skipped: {e}")
 
@@ -242,6 +314,20 @@ async def chat_completions(request: Request):
             route_reason = f"routing failed, used requested model instead ({e})"
             logger.warning(f"[{request_id}] Routing skipped: {e}")
 
+    # PHASE 5: Output-token shaping — routine (simple-tier) requests only.
+    # Terser prompt + lower reasoning effort cuts what comes back, not just
+    # what gets sent.
+    output_shaped = False
+    shape_output = request.headers.get("x-ecoprompt-shape-output", "true").lower() != "false"
+    if shape_output:
+        try:
+            from core.output_shaper import is_shaped, inject_terse_note
+            if is_shaped(route_tier):
+                body["messages"] = inject_terse_note(body["messages"])
+                output_shaped = True
+        except Exception as e:
+            logger.warning(f"[{request_id}] Output shaping skipped: {e}")
+
     forward_headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
@@ -255,16 +341,24 @@ async def chat_completions(request: Request):
     # run scripts/check_models.py periodically to catch that ahead of time).
     upstream = None
     last_error = None
+    fallback_used_this_request = False
     async with httpx.AsyncClient(timeout=60.0) as client:
         for i, candidate_model in enumerate(candidates):
             body["model"] = candidate_model
             apply_reasoning_params(body, candidate_model)
+            if output_shaped:
+                try:
+                    from core.output_shaper import dial_reasoning_effort
+                    dial_reasoning_effort(body, candidate_model)
+                except Exception as e:
+                    logger.warning(f"[{request_id}] Reasoning-effort dial skipped: {e}")
             try:
                 upstream = await client.post(upstream_url, json=body, headers=forward_headers)
                 upstream.raise_for_status()
                 routed_model = candidate_model
                 if i > 0:
                     app.state.fallback_used += 1
+                    fallback_used_this_request = True
                     logger.warning(f"[{request_id}] Used fallback model {candidate_model} (primary {candidates[0]} failed)")
                 break
             except httpx.HTTPStatusError as e:
@@ -311,7 +405,18 @@ async def chat_completions(request: Request):
     app.state.tokens_in += tokens_in
     app.state.tokens_out += tokens_out
     app.state.tokens_saved += tokens_saved
-    app.state.estimated_savings += (tokens_saved / 1000) * 0.01
+
+    if tokens_saved > 0:
+        # Priced at the model actually used for this request, not a flat
+        # guessed rate — see core/pricing.py. Unpriced models contribute
+        # nothing to the dollar total rather than a made-up number, but
+        # are tracked so /stats can say so instead of silently omitting them.
+        from core.pricing import estimate_input_cost_usd
+        cost = estimate_input_cost_usd(routed_model, tokens_saved)
+        if cost is not None:
+            app.state.estimated_savings += cost
+        else:
+            app.state.unpriced_models_seen.add(routed_model)
 
     if use_cache:
         try:
@@ -322,7 +427,8 @@ async def chat_completions(request: Request):
 
     try:
         log_request(request_id=request_id, model=routed_model, tokens_in=tokens_in,
-                    tokens_out=tokens_out, latency_ms=latency_ms, cache_hit=False, source="upstream")
+                    tokens_out=tokens_out, latency_ms=latency_ms, cache_hit=False, source="upstream",
+                    tokens_saved=tokens_saved, route_tier=route_tier, fallback_used=fallback_used_this_request)
     except Exception as log_err:
         # Same reasoning as the cache-hit path above: a logging failure
         # (e.g. read-only filesystem on Vercel) must not turn an
@@ -340,6 +446,16 @@ async def chat_completions(request: Request):
     response.headers["x-ecoprompt-route-tier"] = route_tier
     response.headers["x-ecoprompt-route-reason"] = route_reason
     response.headers["x-ecoprompt-tokens-saved"] = str(tokens_saved)
+    if compression_id:
+        response.headers["x-ecoprompt-compression-id"] = compression_id
+    content_type_skipped = compression_stats.get("content_type_skipped") or {}
+    if content_type_skipped:
+        response.headers["x-ecoprompt-compression-skipped"] = ",".join(
+            f"{k}:{v}" for k, v in sorted(content_type_skipped.items())
+        )
+    response.headers["x-ecoprompt-output-shaped"] = "true" if output_shaped else "false"
+    if lazy_mode:
+        response.headers["x-ecoprompt-style"] = "lazy"
     return response
 
 
@@ -355,4 +471,5 @@ async def startup():
     app.state.complex_routes = 0
     app.state.fallback_used = 0
     app.state.estimated_savings = 0.0
+    app.state.unpriced_models_seen = set()
     logger.info("EcoPrompt v0.5.0 started - 3-tier routing (simple/medium/complex) with per-tier fallbacks")

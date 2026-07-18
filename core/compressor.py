@@ -37,11 +37,14 @@ def compress_messages(messages: list, target_rate: float = 0.5) -> tuple[list, d
     Returns:
         (compressed_messages, stats) where stats has token counts
     """
-    compressor = get_compressor()
+    from core.content_detector import detect_content_type
+
+    compressor = None  # lazy-loaded below, only if a message actually needs it
 
     original_tokens = 0
     compressed_tokens = 0
     compressed_messages = []
+    content_type_skipped = {}
 
     for msg in messages:
         role = msg.get("role", "user")
@@ -49,7 +52,22 @@ def compress_messages(messages: list, target_rate: float = 0.5) -> tuple[list, d
 
         # Only compress user messages — system and assistant messages stay intact
         if role == "user" and len(content.split()) > 20:
+            content_type = detect_content_type(content)
+            if content_type != "prose":
+                # LLMLingua is tuned for prose; running it on code/JSON/logs
+                # risks corrupting syntax for a marginal token saving, so
+                # pass these through untouched instead.
+                compressed_messages.append(msg)
+                token_count = len(content.split())
+                original_tokens += token_count
+                compressed_tokens += token_count
+                content_type_skipped[content_type] = content_type_skipped.get(content_type, 0) + 1
+                logger.debug(f"Compression skipped: detected {content_type} content")
+                continue
+
             try:
+                if compressor is None:
+                    compressor = get_compressor()
                 result = compressor.compress_prompt(
                     content,
                     rate=target_rate,
@@ -83,6 +101,7 @@ def compress_messages(messages: list, target_rate: float = 0.5) -> tuple[list, d
         "compressed_tokens": compressed_tokens,
         "tokens_saved": original_tokens - compressed_tokens,
         "compression_ratio": round(original_tokens / max(compressed_tokens, 1), 2),
+        "content_type_skipped": content_type_skipped,
     }
 
     return compressed_messages, stats
