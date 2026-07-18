@@ -45,6 +45,7 @@ app.add_middleware(
         "x-ecoprompt-route-reason",
         "x-ecoprompt-tokens-saved",
         "x-ecoprompt-compression-id",
+        "x-ecoprompt-compression-skipped",
         "x-ecoprompt-output-shaped",
         "x-ecoprompt-style",
     ],
@@ -115,6 +116,7 @@ async def health():
         "features": [
             "token_compression", "semantic_cache", "routing_matrix",
             "reversible_compression", "output_shaping", "lazy_mode_style",
+            "content_aware_compression",
         ],
         "routing_tiers": {
             "simple":  ["openai/gpt-oss-20b", "groq/compound-mini"],
@@ -272,7 +274,9 @@ async def chat_completions(request: Request):
             from core.compressor import compress_messages
             compressed_messages, compression_stats = compress_messages(messages)
             body["messages"] = compressed_messages
-            logger.info(f"[{request_id}] Compressed | saved={compression_stats['tokens_saved']} tokens")
+            skipped = compression_stats.get("content_type_skipped") or {}
+            skip_note = f" | skipped (non-prose): {skipped}" if skipped else ""
+            logger.info(f"[{request_id}] Compressed | saved={compression_stats['tokens_saved']} tokens{skip_note}")
 
             # Compression is lossy — keep the pre-compression messages
             # retrievable for a short TTL (headroom's CCR pattern) so a
@@ -444,6 +448,11 @@ async def chat_completions(request: Request):
     response.headers["x-ecoprompt-tokens-saved"] = str(tokens_saved)
     if compression_id:
         response.headers["x-ecoprompt-compression-id"] = compression_id
+    content_type_skipped = compression_stats.get("content_type_skipped") or {}
+    if content_type_skipped:
+        response.headers["x-ecoprompt-compression-skipped"] = ",".join(
+            f"{k}:{v}" for k, v in sorted(content_type_skipped.items())
+        )
     response.headers["x-ecoprompt-output-shaped"] = "true" if output_shaped else "false"
     if lazy_mode:
         response.headers["x-ecoprompt-style"] = "lazy"
