@@ -18,6 +18,7 @@
     --text-dim: #7a9a7a;
     --red: #ff4d4d;
     --amber: #ffb800;
+    --blue: #4a9eff;
     --white: #ffffff;
   }
 
@@ -259,7 +260,7 @@
 
 <header>
   <span class="logo">EcoPrompt</span>
-  <span class="version">v0.4.0</span>
+  <span class="version">v0.5.0</span>
   <span class="status-label" style="margin-left:auto; margin-right:8px">proxy running</span>
   <span class="status-dot"></span>
 </header>
@@ -294,25 +295,37 @@
   <div class="card card-wide">
     <div class="card-label" style="margin-bottom:16px">Routing Distribution</div>
     <div class="bar-row">
-      <span class="bar-label">gpt-4o-mini</span>
+      <span class="bar-label">simple</span>
       <div class="bar-track">
-        <div class="bar-fill green" id="bar-cheap" style="width:0%"></div>
+        <div class="bar-fill green" id="bar-simple" style="width:0%"></div>
       </div>
-      <span class="bar-count" id="count-cheap">0</span>
+      <span class="bar-count" id="count-simple">0</span>
     </div>
     <div class="bar-row">
-      <span class="bar-label">gpt-4o</span>
+      <span class="bar-label">medium</span>
       <div class="bar-track">
-        <div class="bar-fill amber" id="bar-powerful" style="width:0%"></div>
+        <div class="bar-fill amber" id="bar-medium" style="width:0%"></div>
       </div>
-      <span class="bar-count" id="count-powerful">0</span>
+      <span class="bar-count" id="count-medium">0</span>
+    </div>
+    <div class="bar-row">
+      <span class="bar-label">complex</span>
+      <div class="bar-track">
+        <div class="bar-fill" id="bar-complex" style="width:0%; background:#4a9eff"></div>
+      </div>
+      <span class="bar-count" id="count-complex">0</span>
     </div>
     <div class="bar-row">
       <span class="bar-label">cache hits</span>
       <div class="bar-track">
-        <div class="bar-fill" id="bar-cache" style="width:0%; background:#4a9eff"></div>
+        <div class="bar-fill" id="bar-cache" style="width:0%; background:#9b59b6"></div>
       </div>
       <span class="bar-count" id="count-cache">0</span>
+    </div>
+    <div style="margin-top:14px; display:flex; gap:16px; flex-wrap:wrap;">
+      <span style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:var(--green);">● simple → gpt-oss-20b</span>
+      <span style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:var(--amber);">● medium → qwen3.6-27b</span>
+      <span style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:#4a9eff;">● complex → gpt-oss-120b</span>
     </div>
   </div>
 
@@ -365,16 +378,19 @@
       (d.tokens_out || 0).toLocaleString() + ' tokens out';
 
     // Routing bars
-    const cheap = d.routes_to_cheap_model || 0;
-    const powerful = d.routes_to_powerful_model || 0;
+    const simple = d.routes_to_cheap_model || 0;
+    const medium = d.routes_to_medium_model || 0;
+    const complex = d.routes_to_powerful_model || 0;
     const cache = d.cache_hits || 0;
-    const total = cheap + powerful + cache || 1;
+    const total = simple + medium + complex + cache || 1;
 
-    document.getElementById('bar-cheap').style.width = (cheap / total * 100) + '%';
-    document.getElementById('bar-powerful').style.width = (powerful / total * 100) + '%';
+    document.getElementById('bar-simple').style.width = (simple / total * 100) + '%';
+    document.getElementById('bar-medium').style.width = (medium / total * 100) + '%';
+    document.getElementById('bar-complex').style.width = (complex / total * 100) + '%';
     document.getElementById('bar-cache').style.width = (cache / total * 100) + '%';
-    document.getElementById('count-cheap').textContent = cheap;
-    document.getElementById('count-powerful').textContent = powerful;
+    document.getElementById('count-simple').textContent = simple;
+    document.getElementById('count-medium').textContent = medium;
+    document.getElementById('count-complex').textContent = complex;
     document.getElementById('count-cache').textContent = cache;
 
     // Compression ratio
